@@ -608,13 +608,20 @@
 			graphics.SetIntegerGrid(false);
 			graphics.transform3(_transform, false);
 			var shape_drawer = new AscCommon.CShapeDrawer();
+			var oldBrush = this.brush;
+			var oldPen = this.pen;
+			// PowerPoint strokes a rectangular picture's outline once, entirely
+			// outside the picture: on the rect grown by w/2 on every side. Here the
+			// fill passes below run without the pen and the outline is drawn last.
+			var bOutlineOutside = this.isOutlineDrawnOutside();
+			if (bOutlineOutside) {
+				this.pen = null;
+			}
 			if (this.getObjectType() !== AscDFH.historyitem_type_OleObject && (this.pen || this.brush)) {
 				shape_drawer.fromShape2(this, graphics, this.calcGeometry);
 				shape_drawer.draw(this.calcGeometry);
 				shape_drawer.Clear();
 			}
-			var oldBrush = this.brush;
-			var oldPen = this.pen;
 
 			if (this.getObjectType() === AscDFH.historyitem_type_OleObject && !graphics.isBoundsChecker()) {
 				var sImageId = this.blipFill && this.blipFill.RasterImageId;
@@ -649,6 +656,10 @@
 				shape_drawer.draw(this.calcGeometry);
 			}
 
+			if (bOutlineOutside) {
+				this.drawOutlineOutside(graphics, _transform, shape_drawer, oldPen);
+			}
+
 			this.brush = oldBrush;
 			this.pen = oldPen;
 
@@ -660,6 +671,45 @@
 			graphics.SetIntegerGrid(true);
 		};
 
+
+		CImageShape.prototype.isOutlineDrawnOutside = function () {
+			if (!(Asc.editor && Asc.editor.isPresentationEditor)) {
+				return false;
+			}
+			if (this.getObjectType() !== AscDFH.historyitem_type_ImageShape) {
+				return false;
+			}
+			var oPen = this.pen;
+			if (!oPen || !oPen.isVisible() || !AscFormat.isRealNumber(oPen.w) || oPen.w <= 0) {
+				return false;
+			}
+			return !this.calcGeometry || this.calcGeometry.preset === "rect";
+		};
+
+		CImageShape.prototype.drawOutlineOutside = function (graphics, transform, shape_drawer, pen) {
+			var dHalf = pen.w / 36000 / 2;
+			var dW = this.extX + 2 * dHalf;
+			var dH = this.extY + 2 * dHalf;
+			var oGeometry = AscFormat.ExecuteNoHistory(function () {
+				var oGeom = AscFormat.CreateGeometry("rect");
+				oGeom.Recalculate(dW, dH);
+				return oGeom;
+			}, this, []);
+			var oTransform = new AscCommon.CMatrix();
+			AscCommon.global_MatrixTransformer.TranslateAppend(oTransform, -dHalf, -dHalf);
+			AscCommon.global_MatrixTransformer.MultiplyAppend(oTransform, transform);
+
+			this.brush = null;
+			this.pen = pen;
+			graphics.transform3(oTransform, false);
+			shape_drawer.Clear();
+			// fromShape, not fromShape2: the smart-rect shortcut strokes the
+			// picture's own extents rather than the grown rect.
+			shape_drawer.fromShape(this, graphics);
+			shape_drawer.draw(oGeometry);
+			shape_drawer.Clear();
+			graphics.transform3(transform, false);
+		};
 
 		CImageShape.prototype.handleUpdateLn = function () {
 			this.recalcLine();

@@ -965,9 +965,8 @@
 
 
 		const TEXT_RECT_ERROR = 0.01;
-		// mm (0.25 pt). Fitted to PowerPoint's own PDF export of an 838-slide deck: with it, lines
-		// breaking at the same word as PowerPoint rose from 93.6% to 95.1%; 0.15-0.45 pt all did worse.
-		const PRESENTATION_LINE_WIDTH_REDUCTION = 0.25 * 25.4 / 72;
+		// mm (1/576 inch = 1/8 pt): the unit PowerPoint lays slide text out in.
+		const PRESENTATION_LAYOUT_UNIT = 25.4 / 576;
 
 		/**
 		 * @extends CGraphicObjectBase
@@ -3153,6 +3152,14 @@
 				this.pen.merge(oCompiledLine);
 			}
 			if (this.pen) {
+				// PowerPoint strokes an outline that has no width (an a:ln without w,
+				// and no theme line style that gives one) at 9525 EMU = 0.75 pt, where
+				// the drawers fall back to 1 pt. Resolve it here so drawing, bounds,
+				// shadows, hit testing and the UI all see the same width.
+				if (this.pen.w == null && Asc.editor && Asc.editor.isPresentationEditor
+					&& (this instanceof CShape || this instanceof AscFormat.CImageShape)) {
+					this.pen.w = 9525;
+				}
 				this.pen.calculate(parents.theme, parents.slide, parents.layout, parents.master, RGBA);
 			}
 		};
@@ -4078,11 +4085,14 @@
 			}
 			oDocContent.SetUseXLimit(bUseXLimit);
 
-			// PowerPoint wraps lines as if the box were slightly narrower than its width minus
-			// insets, so lay slide text out that way instead of TEXT_RECT_ERROR wider.
+			// PowerPoint lays slide text out in whole 1/576-inch units (glyph advances are rounded
+			// to them, see the paragraph text shaper) and wraps a line that would be wider than the
+			// box width minus insets rounded down to whole units. Lay it out on that width instead
+			// of TEXT_RECT_ERROR wider.
 			if (bUseXLimit && oBodyPr.wrap !== AscFormat.nTWTNone && !this.bWordShape
-				&& Asc.editor && Asc.editor.isPresentationEditor)
-				oContentW -= TEXT_RECT_ERROR + PRESENTATION_LINE_WIDTH_REDUCTION;
+				&& Asc.editor && Asc.editor.isPresentationEditor) {
+				oContentW = Math.floor((oContentW - TEXT_RECT_ERROR) / PRESENTATION_LAYOUT_UNIT + 1e-6) * PRESENTATION_LAYOUT_UNIT + 1e-6;
+			}
 
 			oDocContent.RecalculateContent(oContentW, oRet.h, nStartPage);
 

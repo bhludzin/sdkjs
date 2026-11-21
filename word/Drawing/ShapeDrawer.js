@@ -38,6 +38,130 @@ var CShapeColor = AscFormat.CShapeColor;
 
 var c_oAscFill = Asc.c_oAscFill;
 
+// Shortening a stroked subpath under its line ends. A subpath here is the
+// output of Path.getContinuousSubpaths: a moveTo followed by lineTo and bezier4
+// commands, in shape coordinates. Distances are measured from the end point
+// (a circle around it), the way the arrow direction is found.
+function GetSubpathSegments(commands)
+{
+    if (!commands.length || commands[0].id !== AscFormat.moveTo)
+        return null;
+    var segments = [];
+    var last = {x: commands[0].X, y: commands[0].Y};
+    for (var i = 1; i < commands.length; ++i)
+    {
+        var cmd = commands[i];
+        if (cmd.id === AscFormat.lineTo)
+        {
+            var p = {x: cmd.X, y: cmd.Y};
+            segments.push([last, p]);
+            last = p;
+        }
+        else if (cmd.id === AscFormat.bezier4)
+        {
+            var p3 = {x: cmd.X2, y: cmd.Y2};
+            segments.push([last, {x: cmd.X0, y: cmd.Y0}, {x: cmd.X1, y: cmd.Y1}, p3]);
+            last = p3;
+        }
+        else
+        {
+            return null;
+        }
+    }
+    return segments.length ? segments : null;
+}
+
+function SplitSegment(seg, t)
+{
+    function lerp(a, b) { return {x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t}; }
+    if (seg.length === 2)
+    {
+        var m = lerp(seg[0], seg[1]);
+        return [[seg[0], m], [m, seg[1]]];
+    }
+    var p01 = lerp(seg[0], seg[1]), p12 = lerp(seg[1], seg[2]), p23 = lerp(seg[2], seg[3]);
+    var p012 = lerp(p01, p12), p123 = lerp(p12, p23);
+    var mid = lerp(p012, p123);
+    return [[seg[0], p01, p012, mid], [mid, p123, p23, seg[3]]];
+}
+
+function SegmentPoint(seg, t)
+{
+    if (seg.length === 2)
+        return {x: seg[0].x + (seg[1].x - seg[0].x) * t, y: seg[0].y + (seg[1].y - seg[0].y) * t};
+    var s = 1 - t;
+    var a = s * s * s, b = 3 * s * s * t, c = 3 * s * t * t, d = t * t * t;
+    return {
+        x: a * seg[0].x + b * seg[1].x + c * seg[2].x + d * seg[3].x,
+        y: a * seg[0].y + b * seg[1].y + c * seg[2].y + d * seg[3].y
+    };
+}
+
+// The parameter where the segment crosses the circle of radius r around
+// center, given that the point at tIn is inside it and the one at tOut is not.
+function FindSegmentCircleCrossing(seg, center, r, tIn, tOut)
+{
+    for (var i = 0; i < 40; ++i)
+    {
+        var t = (tIn + tOut) / 2;
+        var p = SegmentPoint(seg, t);
+        if (Math.sqrt((p.x - center.x) * (p.x - center.x) + (p.y - center.y) * (p.y - center.y)) < r)
+            tIn = t;
+        else
+            tOut = t;
+    }
+    return (tIn + tOut) / 2;
+}
+
+function PointDistance(a, b)
+{
+    return Math.sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y));
+}
+
+// Drops the part of the segments within dist of the last point.
+function TrimSegmentsEnd(segments, dist)
+{
+    var tip = segments[segments.length - 1][segments[segments.length - 1].length - 1];
+    for (var i = segments.length - 1; i >= 0; --i)
+    {
+        if (PointDistance(segments[i][0], tip) >= dist)
+        {
+            var t = FindSegmentCircleCrossing(segments[i], tip, dist, 1, 0);
+            return segments.slice(0, i).concat([SplitSegment(segments[i], t)[0]]);
+        }
+    }
+    return null;
+}
+
+// Drops the part of the segments within dist of the first point.
+function TrimSegmentsStart(segments, dist)
+{
+    var tip = segments[0][0];
+    for (var i = 0; i < segments.length; ++i)
+    {
+        if (PointDistance(segments[i][segments[i].length - 1], tip) >= dist)
+        {
+            var t = FindSegmentCircleCrossing(segments[i], tip, dist, 0, 1);
+            return [SplitSegment(segments[i], t)[1]].concat(segments.slice(i + 1));
+        }
+    }
+    return null;
+}
+
+function SegmentsToCommands(segments)
+{
+    var commands = [{id: AscFormat.moveTo, X: segments[0][0].x, Y: segments[0][0].y}];
+    for (var i = 0; i < segments.length; ++i)
+    {
+        var seg = segments[i];
+        if (seg.length === 2)
+            commands.push({id: AscFormat.lineTo, X: seg[1].x, Y: seg[1].y});
+        else
+            commands.push({id: AscFormat.bezier4, X0: seg[1].x, Y0: seg[1].y, X1: seg[2].x, Y1: seg[2].y, X2: seg[3].x, Y2: seg[3].y});
+    }
+    return commands;
+}
+
 function DrawLineEnd(xEnd, yEnd, xPrev, yPrev, type, w, len, drawer, trans)
 {
     switch (type)
@@ -471,6 +595,11 @@ function DrawLineEnd(xEnd, yEnd, xPrev, yPrev, type, w, len, drawer, trans)
 
             drawer.drawStrokeFillStyle();
             drawer._e();
+
+            // PowerPoint only fills the triangle. Stroking it as well grows the
+            // head by about 1.6 line widths and pushes the tip past the end point.
+            if (drawer.isFilledOnlyLineEnd(type))
+                break;
 
             drawer._s();
             drawer._m(trans.TransformPointX(x1, y1), trans.TransformPointY(x1, y1));
@@ -1620,10 +1749,17 @@ CShapeDrawer.prototype =
         this.Graphics.m_oContext.globalAlpha = dOldGlobalAlpha;
     },
 
-	drawArrows: function (bIsSaveToPdfMode) {
-		this.IsArrowsDrawing = true;
-		this.Graphics.p_dash(null);
+	// PowerPoint's line ends: filled triangles that are never stroked, at least
+	// 2 pt per size step, and a shaft that stops inside the head.
+	isPresentationLineEnds: function () {
+		return !!(Asc.editor && Asc.editor.isPresentationEditor);
+	},
 
+	isFilledOnlyLineEnd: function (type) {
+		return type === AscFormat.LineEndType.Triangle && this.isPresentationLineEnds();
+	},
+
+	getArrowMetrics: function (bIsSaveToPdfMode) {
 		const graphicsCtx = this.Graphics.isTrack() && !bIsSaveToPdfMode
 			? this.Graphics.Graphics
 			: this.Graphics;
@@ -1631,7 +1767,6 @@ CShapeDrawer.prototype =
 		const fullTransform = bIsSaveToPdfMode
 			? (this.isPdf() ? this.Graphics.GetTransform() : this.Graphics.m_oFullTransform)
 			: graphicsCtx.m_oFullTransform;
-		const inverseTransform = AscCommon.global_MatrixTransformer.Invert(fullTransform);
 
 		const point1 = { x: fullTransform.TransformPointX(0, 0), y: fullTransform.TransformPointY(0, 0) };
 		const point2 = { x: fullTransform.TransformPointX(1, 1), y: fullTransform.TransformPointY(1, 1) };
@@ -1641,14 +1776,147 @@ CShapeDrawer.prototype =
 			? (this.isPdf() ? this.Graphics.GetLineWidth() : graphicsCtx.m_oContext.lineWidth)
 			: graphicsCtx.m_oContext.lineWidth;
 
-		const penWidth = lineSize * transformScaleFactor;
-		const minArrowSize = bIsSaveToPdfMode
-			? 2.5 / AscCommon.g_dKoef_mm_to_pix
-			: null;
+		let minArrowSize = null;
+		if (bIsSaveToPdfMode) {
+			// PowerPoint sizes the line end of a line thinner than 2 pt as if
+			// the line were 2 pt wide (a 0.75 pt line gets a 6 x 6 pt head).
+			minArrowSize = this.isPresentationLineEnds()
+				? 2 * 25.4 / 72
+				: 2.5 / AscCommon.g_dKoef_mm_to_pix;
+		}
 
-		const arrCoef = bIsSaveToPdfMode
-			? 1
-			: this.isArrPix ? (1 / AscCommon.g_dKoef_mm_to_pix) : 1;
+		return {
+			fullTransform: fullTransform,
+			transformScaleFactor: transformScaleFactor,
+			penWidth: lineSize * transformScaleFactor,
+			minArrowSize: minArrowSize,
+			arrCoef: bIsSaveToPdfMode
+				? 1
+				: this.isArrPix ? (1 / AscCommon.g_dKoef_mm_to_pix) : 1
+		};
+	},
+
+	// How far the shaft is cut back from the tip of a filled line end, and the
+	// arrow length drawArrows uses to find the head's direction, both in shape
+	// units. PowerPoint stops the shaft half a size step (max(line width, 2 pt))
+	// past the base of the head, so a thick line's butt end never shows beside
+	// the tip.
+	getShaftTrim: function (lineEnd) {
+		if (!lineEnd || !this.isFilledOnlyLineEnd(lineEnd.type))
+			return null;
+		const metrics = this.getArrowMetrics(this.isPdf());
+		if (!(metrics.transformScaleFactor > 0) || !(metrics.penWidth > 0))
+			return null;
+		const arrowLength = lineEnd.GetLen(metrics.penWidth, metrics.minArrowSize);
+		const sizeStep = Math.max(metrics.penWidth, metrics.minArrowSize ? metrics.minArrowSize : 2);
+		const trim = metrics.arrCoef * (arrowLength - sizeStep / 2) / metrics.transformScaleFactor;
+		if (!(trim > 0))
+			return null;
+		return {trim: trim, arrowLength: arrowLength / metrics.transformScaleFactor};
+	},
+
+	// The paths Geometry.draw should draw: pathLst itself, or a copy in which the
+	// subpaths that get a filled line end are stroked shortened under it.
+	getPathsToDraw: function (pathLst) {
+		if (!this.Ln || this.bIsNoStrokeAttack || !this.isPresentationLineEnds() || !this.isArrowPresent())
+			return pathLst;
+		if (!this.Graphics || this.Graphics.isBoundsChecker())
+			return pathLst;
+
+		const head = this.getShaftTrim(this.Ln.headEnd);
+		const tail = this.getShaftTrim(this.Ln.tailEnd);
+		if (!head && !tail)
+			return pathLst;
+
+		// The same choice of paths as drawArrows.
+		const unclosedPaths = pathLst.filter(function (path) {
+			return !path.isEmpty() && !path.isClosed();
+		});
+		const headPath = head ? unclosedPaths[0] : null;
+		const tailPath = tail ? unclosedPaths[unclosedPaths.length - 1] : null;
+
+		const drawer = this;
+		const result = [];
+		for (let i = 0; i < pathLst.length; ++i) {
+			const path = pathLst[i];
+			const trimmed = (path === headPath || path === tailPath) && path.stroke
+				? this.getTrimmedPath(path, path === headPath ? head : null, path === tailPath ? tail : null)
+				: null;
+			if (!trimmed) {
+				result.push(path);
+				continue;
+			}
+			if (path.fill !== "none" && !this.bIsNoFillAttack) {
+				// Fill the original outline, stroke the shortened one.
+				result.push({
+					draw: function (shapeDrawer) {
+						drawer.drawWithoutStroke(function () { path.draw(shapeDrawer); });
+					},
+					drawSmart: function (shapeDrawer) {
+						drawer.drawWithoutStroke(function () { path.drawSmart(shapeDrawer); });
+					}
+				});
+			}
+			result.push(trimmed);
+		}
+		return result;
+	},
+
+	drawWithoutStroke: function (fDraw) {
+		const bOld = this.bIsNoStrokeAttack;
+		this.bIsNoStrokeAttack = true;
+		fDraw();
+		this.bIsNoStrokeAttack = bOld;
+	},
+
+	getTrimmedPath: function (path, head, tail) {
+		const subpaths = path.getContinuousSubpaths();
+		let changed = false;
+		const commands = [];
+		for (let i = 0; i < subpaths.length; ++i) {
+			const subpath = subpaths[i];
+			let subCommands = subpath.ArrPathCommand;
+			if (!subpath.isClosed(0)) {
+				let segments = GetSubpathSegments(subCommands);
+				// Only where drawArrows draws a head, i.e. where it finds a direction.
+				if (segments && tail && AscFormat.isRealNumber(subpath.getTailArrowAngle(tail.arrowLength))) {
+					segments = TrimSegmentsEnd(segments, tail.trim);
+				}
+				if (segments && head && AscFormat.isRealNumber(subpath.getHeadArrowAngle(head.arrowLength))) {
+					segments = TrimSegmentsStart(segments, head.trim);
+				}
+				if (segments) {
+					subCommands = SegmentsToCommands(segments);
+					changed = true;
+				}
+			}
+			for (let j = 0; j < subCommands.length; ++j) {
+				commands.push(subCommands[j]);
+			}
+		}
+		if (!changed)
+			return null;
+
+		const trimmedPath = AscFormat.ExecuteNoHistory(function () {
+			return new AscFormat.Path();
+		}, this, []);
+		trimmedPath.fill = "none";
+		trimmedPath.stroke = true;
+		trimmedPath.ArrPathCommand = commands;
+		return trimmedPath;
+	},
+
+	drawArrows: function (bIsSaveToPdfMode) {
+		this.IsArrowsDrawing = true;
+		this.Graphics.p_dash(null);
+
+		const metrics = this.getArrowMetrics(bIsSaveToPdfMode);
+		const fullTransform = metrics.fullTransform;
+		const inverseTransform = AscCommon.global_MatrixTransformer.Invert(fullTransform);
+		const transformScaleFactor = metrics.transformScaleFactor;
+		const penWidth = metrics.penWidth;
+		const minArrowSize = metrics.minArrowSize;
+		const arrCoef = metrics.arrCoef;
 
 		const geometry = this.Shape.getGeometry();
 		const unclosedPaths = geometry.pathLst.filter(function (path) {

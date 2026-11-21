@@ -1350,14 +1350,24 @@ function CChangesGeometryAddAdj(Class, Name, OldValue, NewValue, OldAvValue, bRe
             this.drawSmart(shape_drawer);
             return;
         }
-        for (var i=0, n=this.pathLst.length; i<n;++i)
-            this.pathLst[i].draw(shape_drawer, i);
+        var pathLst = this.getPathsToDraw(shape_drawer);
+        for (var i=0, n=pathLst.length; i<n;++i)
+            pathLst[i].draw(shape_drawer, i);
     };
 
     Geometry.prototype.drawSmart = function(shape_drawer)
     {
-        for (var i=0, n=this.pathLst.length; i<n;++i)
-            this.pathLst[i].drawSmart(shape_drawer);
+        var pathLst = this.getPathsToDraw(shape_drawer);
+        for (var i=0, n=pathLst.length; i<n;++i)
+            pathLst[i].drawSmart(shape_drawer);
+    };
+
+    // A shape drawer may stroke some paths shortened under their line ends.
+    Geometry.prototype.getPathsToDraw = function(shape_drawer)
+    {
+        if (shape_drawer && typeof shape_drawer.getPathsToDraw === "function")
+            return shape_drawer.getPathsToDraw(this.pathLst);
+        return this.pathLst;
     };
 
     Geometry.prototype.check_bounds = function(checker)

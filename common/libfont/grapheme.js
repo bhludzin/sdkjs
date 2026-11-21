@@ -252,6 +252,17 @@
 		
 		return oGrapheme[0];
 	}
+	/**
+	 * The glyph id of a grapheme made of exactly one glyph, otherwise -1.
+	 */
+	function GetGraphemeSingleGid(graphemeId)
+	{
+		let grapheme = GRAPHEMES[graphemeId];
+		if (!grapheme || 1 !== grapheme[2])
+			return -1;
+
+		return grapheme[3];
+	}
 	function GetFontNameByFontId(fontId)
 	{
 		return AscCommon.FontNameMap.GetName((fontId | 0) >> 8);
@@ -292,6 +303,7 @@
 	window['AscFonts'].GetGraphemeWidth      = GetGraphemeWidth;
 	window['AscFonts'].GetGraphemeBBox       = GetGraphemeBBox;
 	window['AscFonts'].GetGraphemeFontId     = GetGraphemeFontId;
+	window['AscFonts'].GetGraphemeSingleGid  = GetGraphemeSingleGid;
 	window['AscFonts'].GetFontNameByFontId   = GetFontNameByFontId;
 	window['AscFonts'].GetFontStyleByFontId  = GetFontStyleByFontId;
 	window['AscFonts'].GetGraphemeCodePoints = GetGraphemeCodePoints;

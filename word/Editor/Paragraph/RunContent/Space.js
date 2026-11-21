@@ -100,7 +100,10 @@
 		let fontCoef = this.GetFontCoef();
 		// Разрешенные размеры шрифта только либо целое, либо целое/2. Даже после применения fontCoef, поэтому
 		// мы должны подкрутить коэффициент так, чтобы после домножения на него, у на получался разрешенный размер.
-		fontSize = (((fontSize * fontCoef * 2 + 0.5) | 0) / 2);
+		// Fractional sizes without a coefficient (PowerPoint's sz="1275") are kept as they are, the
+		// way CRunText.SetMetrics keeps them, so a space is as wide as the text around it.
+		if (1 !== fontCoef)
+			fontSize = (((fontSize * fontCoef * 2 + 0.5) | 0) / 2);
 		this.Flags = (this.Flags & 0xFFFF) | (((fontSize * 64) & 0xFFFF) << 16);
 	};
 	CRunSpace.prototype.Draw = function(X, Y, Context, PDSE, oTextPr)
