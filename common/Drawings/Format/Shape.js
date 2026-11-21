@@ -3153,6 +3153,14 @@
 				this.pen.merge(oCompiledLine);
 			}
 			if (this.pen) {
+				// PowerPoint strokes an outline that has no width (an a:ln without w,
+				// and no theme line style that gives one) at 9525 EMU = 0.75 pt, where
+				// the drawers fall back to 1 pt. Resolve it here so drawing, bounds,
+				// shadows, hit testing and the UI all see the same width.
+				if (this.pen.w == null && Asc.editor && Asc.editor.isPresentationEditor
+					&& (this instanceof CShape || this instanceof AscFormat.CImageShape)) {
+					this.pen.w = 9525;
+				}
 				this.pen.calculate(parents.theme, parents.slide, parents.layout, parents.master, RGBA);
 			}
 		};
