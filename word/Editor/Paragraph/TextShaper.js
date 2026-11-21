@@ -175,6 +175,23 @@
 			}
 		}
 	};
+	CParagraphTextShaper.prototype.FlushWord = function()
+	{
+		// The glyph advances PowerPoint rounds are measured here, before shaping, because the
+		// font engine cannot be called while the shaped glyphs are read (see getGlyphAdvance).
+		if (this.Buffer.length > 0 && -1 !== this.FontId && this.FontId && this.FontId.m_pFaceInfo
+			&& this.private_GetLayoutFontSize(1) > 0)
+		{
+			let codePoints = [];
+			for (let index = 0, count = this.Buffer.length; index < count; ++index)
+				codePoints.push(this.GetCodePoint(this.Buffer[index]));
+
+			let fontInfo = this.GetFontInfo(this.FontSlot);
+			prefetchGlyphAdvances(this.FontId.m_pFaceInfo.family_name, fontInfo.Style, codePoints);
+		}
+
+		AscFonts.CTextShaper.prototype.FlushWord.call(this);
+	};
 	CParagraphTextShaper.prototype.FlushGrapheme = function(nGrapheme, nWidth, nCodePointsCount, isLigature)
 	{
 		if (nCodePointsCount <= 0)
@@ -199,6 +216,9 @@
 			this.BufferIndex += nCodePointsCount;
 		}
 		
+		if (1 === nCodePointsCount)
+			nWidth = this.private_GetLayoutWidth(nGrapheme, nWidth);
+
 		let _nWidth = (nWidth + (this.Spacing / this.FontSize)) / nCodePointsCount;
 		if (1 === nCodePointsCount)
 		{
@@ -299,10 +319,54 @@
 		
 		let width   = AscFonts.GetGraphemeWidth(grapheme);
 		let enWidth = getEastAsiaEnWidth(fontInfo.Name, fontInfo.Style);
+
+		let layoutFontSize = this.private_GetLayoutFontSize(fontInfo.Size);
+		if (layoutFontSize > 0)
+			width = getLayoutAdvance(width, layoutFontSize);
 		
 		item.SetGrapheme(this.MaskSymbol ? grapheme : AscFonts.NO_GRAPHEME);
 		item.SetMetrics(fontInfo.Size, AscWord.fontslot_ASCII, this.TextPr);
 		item.SetWidth(width, this.TextPr, enWidth);
+	};
+	/**
+	 * Font size (pt) at which PowerPoint's layout advances are rounded, or 0 when the
+	 * advances stay linear: outside the presentation editor, and for superscript,
+	 * subscript and small caps, whose size is scaled when the item is measured.
+	 */
+	CParagraphTextShaper.prototype.private_GetLayoutFontSize = function(fontSize)
+	{
+		if (!(Asc.editor && Asc.editor.isPresentationEditor) || !this.TextPr || null !== this.MaskSymbol)
+			return 0;
+
+		if (this.TextPr.VertAlign !== AscCommon.vertalign_Baseline || (this.TextPr.SmallCaps && !this.TextPr.Caps))
+			return 0;
+
+		// The size the run items store (1/64 pt), so that an item's width is a whole number of 1/8 pt.
+		fontSize = ((fontSize * 64) | 0) / 64;
+		return fontSize > 0 ? fontSize : 0;
+	};
+	/**
+	 * Advance (mm per pt of font size) used to lay out one shaped glyph. PowerPoint rounds
+	 * each glyph's own advance to whole 1/576-inch units (1/8 pt; a font size of S pt has 8 x S
+	 * units per em) and then adds pair kerning unrounded. Measured on PowerPoint's PDF export:
+	 * the start positions of words along a line follow this to within about 0.02 pt per 100 pt,
+	 * while exact design widths drift by up to 0.3 pt per 100 pt.
+	 */
+	CParagraphTextShaper.prototype.private_GetLayoutWidth = function(grapheme, width)
+	{
+		let fontSize = this.private_GetLayoutFontSize(this.FontSize);
+		if (fontSize <= 0)
+			return width;
+
+		let gid = AscFonts.GetGraphemeSingleGid(grapheme);
+		if (gid < 0)
+			return width;
+
+		let advance = getGlyphAdvance(AscFonts.GetGraphemeFontId(grapheme), gid);
+		if (advance <= 0)
+			return width;
+
+		return getLayoutAdvance(advance, fontSize) + (width - advance);
 	};
 	CParagraphTextShaper.prototype.IsEqualTextPr = function(oTextPr)
 	{
@@ -398,6 +462,84 @@
 			this.MaskSymbol = null;
 	};
 	
+	// Font key (FontNameMap id << 8 | style, as graphemes store it) -> gid -> unkerned advance
+	// (mm per pt of font size), 0 when it is not known.
+	let glyphAdvances = {};
+	// Font key -> code point -> true once its glyph's advance has been measured.
+	let prefetchedCodePoints = {};
+	/**
+	 * Unkerned advance of a glyph, from the cache filled by prefetchGlyphAdvances, or 0.
+	 * This runs while the shaper's output is being read, so it must not call into the font
+	 * engine: the engine's calls share the buffer that output is read from.
+	 */
+	function getGlyphAdvance(fontKey, gid)
+	{
+		let advances = glyphAdvances[fontKey];
+		if (!advances || undefined === advances[gid])
+			return 0;
+
+		return advances[gid];
+	}
+	/**
+	 * Measures and caches the unkerned advances of the glyphs the given code points map to,
+	 * in the font the shaper is about to use, at AscFonts.MEASURE_FONTSIZE (the size the shaped
+	 * advances are given at). Glyphs the shaper substitutes (ligatures, alternates) are not
+	 * covered and keep their linear advance. Fonts emboldened in code are left out: their
+	 * measured advance includes the emboldening, the shaped advance does not.
+	 */
+	function prefetchGlyphAdvances(familyName, fontStyle, codePoints)
+	{
+		let fontKey = AscCommon.FontNameMap.GetId(familyName) << 8 | fontStyle;
+		let known   = prefetchedCodePoints[fontKey];
+		if (!known)
+			known = prefetchedCodePoints[fontKey] = {};
+
+		let missing = [];
+		for (let index = 0, count = codePoints.length; index < count; ++index)
+		{
+			if (!known[codePoints[index]])
+				missing.push(codePoints[index]);
+		}
+
+		if (!missing.length)
+			return;
+
+		let advances = glyphAdvances[fontKey];
+		if (!advances)
+			advances = glyphAdvances[fontKey] = {};
+
+		let measurer = AscCommon.g_oTextMeasurer;
+		measurer.SetFontInternal(familyName, AscFonts.MEASURE_FONTSIZE, fontStyle);
+
+		let font = measurer.m_oManager ? measurer.m_oManager.m_pFont : null;
+		if (!font)
+			return;
+
+		let isStringGid = font.GetStringGID();
+		font.SetStringGID(true);
+		for (let index = 0, count = missing.length; index < count; ++index)
+		{
+			known[missing[index]] = true;
+
+			let gid = font.GetGIDByUnicode(missing[index]);
+			if (!gid || undefined !== advances[gid])
+				continue;
+
+			let glyph = font.m_bNeedDoBold ? null : font.GetChar(gid);
+			advances[gid] = glyph && glyph.fAdvanceX > 0 ? glyph.fAdvanceX * 64 * AscFonts.GRAPHEME_COEF : 0;
+		}
+		font.SetStringGID(isStringGid);
+	}
+	/**
+	 * An advance (mm per pt of font size) rounded the way PowerPoint lays text out: to a
+	 * whole number of 1/8 pt at the given font size, halves rounded up.
+	 */
+	function getLayoutAdvance(advance, fontSize)
+	{
+		let eighths = Math.floor(advance * fontSize * 72 / 25.4 * 8 + 0.5 + 1e-6);
+		return eighths / 8 * 25.4 / 72 / fontSize;
+	}
+
 	let enWidth = {};
 	function getEastAsiaEnWidth(fontName, fontStyle)
 	{

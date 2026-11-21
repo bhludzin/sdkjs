@@ -965,9 +965,8 @@
 
 
 		const TEXT_RECT_ERROR = 0.01;
-		// mm (0.25 pt). Fitted to PowerPoint's own PDF export of an 838-slide deck: with it, lines
-		// breaking at the same word as PowerPoint rose from 93.6% to 95.1%; 0.15-0.45 pt all did worse.
-		const PRESENTATION_LINE_WIDTH_REDUCTION = 0.25 * 25.4 / 72;
+		// mm (1/576 inch = 1/8 pt): the unit PowerPoint lays slide text out in.
+		const PRESENTATION_LAYOUT_UNIT = 25.4 / 576;
 
 		/**
 		 * @extends CGraphicObjectBase
@@ -4086,11 +4085,14 @@
 			}
 			oDocContent.SetUseXLimit(bUseXLimit);
 
-			// PowerPoint wraps lines as if the box were slightly narrower than its width minus
-			// insets, so lay slide text out that way instead of TEXT_RECT_ERROR wider.
+			// PowerPoint lays slide text out in whole 1/576-inch units (glyph advances are rounded
+			// to them, see the paragraph text shaper) and wraps a line that would be wider than the
+			// box width minus insets rounded down to whole units. Lay it out on that width instead
+			// of TEXT_RECT_ERROR wider.
 			if (bUseXLimit && oBodyPr.wrap !== AscFormat.nTWTNone && !this.bWordShape
-				&& Asc.editor && Asc.editor.isPresentationEditor)
-				oContentW -= TEXT_RECT_ERROR + PRESENTATION_LINE_WIDTH_REDUCTION;
+				&& Asc.editor && Asc.editor.isPresentationEditor) {
+				oContentW = Math.floor((oContentW - TEXT_RECT_ERROR) / PRESENTATION_LAYOUT_UNIT + 1e-6) * PRESENTATION_LAYOUT_UNIT + 1e-6;
+			}
 
 			oDocContent.RecalculateContent(oContentW, oRet.h, nStartPage);
 
