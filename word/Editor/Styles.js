@@ -12993,6 +12993,11 @@ CLang.prototype.Is_Equal = function(Lang)
 	return this.IsEqual(Lang);
 }
 
+// CTextPr binary: high bit of the Ligatures byte = an extension block follows (see Write_ToBinary);
+// the low bits set to TEXTPR_BINARY_LIGATURES_UNSET = Ligatures itself is undefined.
+const TEXTPR_BINARY_EXTENSION       = 0x80;
+const TEXTPR_BINARY_LIGATURES_UNSET = 0x7F;
+
 function CTextPr()
 {
     this.Bold       = undefined; // Жирный текст
@@ -13024,6 +13029,7 @@ function CTextPr()
     this.Shd        = undefined;
     this.Vanish     = undefined;
 	this.Ligatures  = undefined;
+	this.Kern       = undefined; // Pair kerning applies from this font size (pt) up; 0 = no kerning
 
     this.TextOutline    = undefined;
     this.TextFill       = undefined;
@@ -13066,6 +13072,7 @@ CTextPr.prototype.Clear = function()
 	this.Shd            = undefined;
 	this.Vanish         = undefined;
 	this.Ligatures      = undefined;
+	this.Kern           = undefined;
 	this.TextOutline    = undefined;
 	this.TextFill       = undefined;
 	this.HighlightColor = undefined;
@@ -13131,6 +13138,7 @@ CTextPr.prototype.Copy = function(bCopyPrChange, oPr)
 
 	TextPr.Vanish    = this.Vanish;
 	TextPr.Ligatures = this.Ligatures;
+	TextPr.Kern      = this.Kern;
 
 	if (true === bCopyPrChange && undefined !== this.PrChange)
 	{
@@ -13170,6 +13178,7 @@ CTextPr.prototype.createDuplicateForSmartArt = function(oPr)
 
 	TextPr.Vanish    = this.Vanish;
 	TextPr.Ligatures = this.Ligatures;
+	TextPr.Kern      = this.Kern;
 
 	if (oPr.custT) {
 		TextPr.FontSize = this.FontSize;
@@ -13322,6 +13331,9 @@ CTextPr.prototype.Merge = function(TextPr)
 
 	if (undefined !== TextPr.Ligatures && null !== TextPr.Ligatures)
 		this.Ligatures = TextPr.Ligatures;
+
+	if (undefined !== TextPr.Kern && null !== TextPr.Kern)
+		this.Kern = TextPr.Kern;
 
 	if (TextPr.TextOutline)
 		this.TextOutline = TextPr.TextOutline.createDuplicate();
@@ -13502,6 +13514,11 @@ CTextPr.prototype.Apply = function(textPr)
 	else if (undefined !== textPr.Ligatures)
 		this.Ligatures = textPr.Ligatures;
 	
+	if (null === textPr.Kern)
+		this.Kern = undefined;
+	else if (undefined !== textPr.Kern)
+		this.Kern = textPr.Kern;
+	
 	if (null === textPr.FontScale)
 		this.FontScale = undefined;
 	else if (undefined !== textPr.FontScale)
@@ -13539,6 +13556,7 @@ CTextPr.prototype.InitDefault = function(nCompatibilityMode)
 	this.Shd     = undefined;
 	this.Vanish  = false;
 	this.Ligatures  = Asc.LigaturesType.None;
+	this.Kern       = 0;
 
 	this.TextOutline    = undefined;
 	this.TextFill       = undefined;
@@ -13618,6 +13636,7 @@ CTextPr.prototype.Set_FromObject = function(TextPr, isUndefinedToNull)
 
 	this.Vanish         = CheckUndefinedToNull(isUndefinedToNull, TextPr.Vanish);
 	this.Ligatures      = CheckUndefinedToNull(isUndefinedToNull, TextPr.Ligatures);
+	this.Kern           = CheckUndefinedToNull(isUndefinedToNull, TextPr.Kern);
 	this.Unifill        = CheckUndefinedToNull(isUndefinedToNull, TextPr.Unifill);
 	this.FontRef        = CheckUndefinedToNull(isUndefinedToNull, TextPr.FontRef);
 	this.TextFill       = CheckUndefinedToNull(isUndefinedToNull, TextPr.TextFill);
@@ -13734,6 +13753,9 @@ CTextPr.prototype.Compare = function(TextPr)
 
 	if (undefined !== this.Ligatures && this.Ligatures !== TextPr.Ligatures)
 		this.Ligatures = undefined;
+
+	if (undefined !== this.Kern && !IsEqualNullableFloatNumbers(this.Kern, TextPr.Kern))
+		this.Kern = undefined;
 
 	if (undefined !== this.FontScale && this.FontScale !== TextPr.FontScale)
 		this.FontScale = undefined;
@@ -14112,10 +14134,33 @@ CTextPr.prototype.Write_ToBinary = function(Writer)
 		Flags |= 1073741824;
 	}
 
-	if (undefined != this.Ligatures)
+	// All 32 flag bits are in use, so newer properties go in an extension block written right
+	// after the Ligatures byte. The byte's high bit marks that the block follows (ligature types
+	// use only the low four bits), so data written before the extension still reads unchanged.
+	let isExtension = (undefined != this.Kern);
+	if (undefined != this.Ligatures || isExtension)
 	{
-		Writer.WriteByte(this.Ligatures);
+		let nLigatures = (undefined != this.Ligatures ? this.Ligatures : TEXTPR_BINARY_LIGATURES_UNSET);
+		Writer.WriteByte(nLigatures | (isExtension ? TEXTPR_BINARY_EXTENSION : 0));
 		Flags |= (1 << 31);
+	}
+
+	if (isExtension)
+	{
+		let nExtStartPos = Writer.GetCurPosition();
+		Writer.Skip(4);
+		let nExtFlags = 0;
+
+		if (undefined != this.Kern)
+		{
+			Writer.WriteDouble(this.Kern);
+			nExtFlags |= 1;
+		}
+
+		let nExtEndPos = Writer.GetCurPosition();
+		Writer.Seek(nExtStartPos);
+		Writer.WriteLong(nExtFlags);
+		Writer.Seek(nExtEndPos);
 	}
 
 	var EndPos = Writer.GetCurPosition();
@@ -14284,7 +14329,22 @@ CTextPr.prototype.Read_FromBinary = function(Reader)
 	}
 
 	if (Flags & (1 << 31))
-		this.Ligatures = Reader.GetByte();
+	{
+		let nLigatures = Reader.GetByte();
+		let isExtension = !!(nLigatures & TEXTPR_BINARY_EXTENSION);
+		nLigatures &= ~TEXTPR_BINARY_EXTENSION;
+
+		if (TEXTPR_BINARY_LIGATURES_UNSET !== nLigatures)
+			this.Ligatures = nLigatures;
+
+		if (isExtension)
+		{
+			let nExtFlags = Reader.GetLong();
+
+			if (nExtFlags & 1)
+				this.Kern = Reader.GetDouble();
+		}
+	}
 };
 CTextPr.prototype.Check_NeedRecalc = function()
 {
@@ -14549,6 +14609,9 @@ CTextPr.prototype.Is_Equal = function(TextPr)
 	if (this.Ligatures !== TextPr.Ligatures)
 		return false;
 
+	if (!IsEqualNullableFloatNumbers(this.Kern, TextPr.Kern))
+		return false;
+
 	if (!IsEqualStyleObjects(this.Shd, TextPr.Shd))
 		return false;
 	if (undefined != TextPr.AscLine)
@@ -14599,6 +14662,7 @@ CTextPr.prototype.Is_Empty = function()
 		|| undefined !== this.Shd
 		|| undefined !== this.Vanish
 		|| undefined !== this.Ligatures
+		|| undefined !== this.Kern
 		|| undefined !== this.TextOutline
 		|| undefined !== this.TextFill
 		|| undefined !== this.HighlightColor)
@@ -14711,6 +14775,9 @@ CTextPr.prototype.GetDiff = function(oTextPr)
 
 	if (this.Ligatures !== oTextPr.Ligatures)
 		oResultTextPr.Ligatures = this.Ligatures;
+
+	if (!IsEqualNullableFloatNumbers(this.Kern, oTextPr.Kern))
+		oResultTextPr.Kern = this.Kern;
 
 	if (this.Shd && !this.Shd.IsEqual(oTextPr.Shd))
 		oResultTextPr.Shd = this.Shd.Copy();
@@ -14959,6 +15026,23 @@ CTextPr.prototype.SetLigatures = function(nType)
 CTextPr.prototype.GetLigatures = function()
 {
 	return this.Ligatures;
+};
+CTextPr.prototype.SetKern = function(nKern)
+{
+	this.Kern = nKern;
+};
+CTextPr.prototype.GetKern = function()
+{
+	return this.Kern;
+};
+/**
+ * Whether glyph pairs are kerned: Kern is the smallest font size (pt) that gets kerning.
+ * Matches PowerPoint: kern="1800" kerns 18 pt text but not 17.9 pt; 0 or no value never kerns.
+ * @returns {boolean}
+ */
+CTextPr.prototype.IsKerned = function()
+{
+	return (this.Kern > 0 && this.FontSize > 0 && this.FontSize >= this.Kern - 0.001);
 };
 CTextPr.prototype.WriteToBinary = function(oWriter)
 {

@@ -965,6 +965,9 @@
 
 
 		const TEXT_RECT_ERROR = 0.01;
+		// mm (0.25 pt). Fitted to PowerPoint's own PDF export of an 838-slide deck: with it, lines
+		// breaking at the same word as PowerPoint rose from 93.6% to 95.1%; 0.15-0.45 pt all did worse.
+		const PRESENTATION_LINE_WIDTH_REDUCTION = 0.25 * 25.4 / 72;
 
 		/**
 		 * @extends CGraphicObjectBase
@@ -4074,6 +4077,12 @@
 				}
 			}
 			oDocContent.SetUseXLimit(bUseXLimit);
+
+			// PowerPoint wraps lines as if the box were slightly narrower than its width minus
+			// insets, so lay slide text out that way instead of TEXT_RECT_ERROR wider.
+			if (bUseXLimit && oBodyPr.wrap !== AscFormat.nTWTNone && !this.bWordShape
+				&& Asc.editor && Asc.editor.isPresentationEditor)
+				oContentW -= TEXT_RECT_ERROR + PRESENTATION_LINE_WIDTH_REDUCTION;
 
 			oDocContent.RecalculateContent(oContentW, oRet.h, nStartPage);
 

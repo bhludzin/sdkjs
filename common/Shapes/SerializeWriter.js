@@ -2189,6 +2189,11 @@ function CBinaryFileWriter()
             oThis._WriteInt1(17, nFontSize);
         }
 
+        if (undefined !== rPr.Kern && null !== rPr.Kern)
+        {
+            oThis._WriteInt1(8, Math.round(rPr.Kern * 100));
+        }
+
         if (AscCommon.vertalign_SubScript == rPr.VertAlign)
             oThis._WriteInt1(2, -25000);
         else if (AscCommon.vertalign_SuperScript == rPr.VertAlign)
