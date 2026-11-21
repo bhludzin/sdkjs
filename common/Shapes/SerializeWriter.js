@@ -2184,7 +2184,7 @@ function CBinaryFileWriter()
 
         if (undefined !== rPr.FontSize && null != rPr.FontSize)
         {
-            var nFontSize = rPr.FontSize * 100;
+            var nFontSize = Math.round(rPr.FontSize * 100);
             nFontSize = Math.max(100, nFontSize);
             oThis._WriteInt1(17, nFontSize);
         }

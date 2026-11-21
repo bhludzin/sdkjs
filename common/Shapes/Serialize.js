@@ -9048,9 +9048,8 @@ function BinaryPPTYLoader()
                 }
                 case 17:
                 {
+                    // sz is in hundredths of a point; PowerPoint lays out 12.75 pt as 12.75 pt, not 13
                     var _size = s.GetLong() / 100;
-                    _size = ((_size * 2) + 0.5) >> 0;
-                    _size /= 2;
                     rPr.FontSize = _size;
                     rPr.FontSizeCS = _size;
                     break;
