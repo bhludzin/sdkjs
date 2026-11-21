@@ -145,10 +145,12 @@
 		
 		// TODO: Check bugs 66317 66435
 		let nScript = this.GetTextScript(nUnicode);
+		let isCommonJoin = this.private_IsCommonScriptJoin(this.Script, nScript);
 		if (nScript !== this.Script
 			&& -1 !== this.Script
 			&& AscFonts.HB_SCRIPT.HB_SCRIPT_INHERITED !== nScript
-			&& AscFonts.HB_SCRIPT.HB_SCRIPT_INHERITED !== this.Script)
+			&& AscFonts.HB_SCRIPT.HB_SCRIPT_INHERITED !== this.Script
+			&& !isCommonJoin)
 			this.FlushWord();
 		
 		if (this.GetDirection(this.Script) !== this.GetDirection(nScript))
@@ -193,12 +195,37 @@
 		if (this.FontId !== nFontId && -1 !== this.FontId)
 			this.FlushWord();
 
-		this.Script    = AscFonts.HB_SCRIPT.HB_SCRIPT_INHERITED !== nScript || -1 === this.Script ? nScript : this.Script;
+		// Punctuation and digits that joined a run keep that run's script, so the whole
+		// run is shaped with the real script (see private_IsCommonScriptJoin).
+		let keepScript = -1 !== this.Script
+			&& (AscFonts.HB_SCRIPT.HB_SCRIPT_INHERITED === nScript
+				|| (AscFonts.HB_SCRIPT.HB_SCRIPT_COMMON === nScript && isCommonJoin));
+		this.Script    = keepScript ? this.Script : nScript;
 		this.FontSlot  = AscWord.fontslot_None !== nFontSlot ? nFontSlot : this.FontSlot;
 		this.FontId    = nFontId;
 		this.FontSubst = isSubst;
 
 		return nUnicode;
+	};
+	/**
+	 * Whether a character of script nNewScript continues the current run of script
+	 * nCurScript instead of starting a new one. Following Unicode's script itemization
+	 * (UAX #24), Common characters (punctuation, digits, symbols) belong to the
+	 * surrounding run; shaping them separately loses kerning between a letter and
+	 * adjacent punctuation (e.g. "y." or "r,"), which PowerPoint applies. Limited to
+	 * left-to-right runs so bidirectional text is segmented exactly as before.
+	 */
+	CTextShaper.prototype.private_IsCommonScriptJoin = function(nCurScript, nNewScript)
+	{
+		if (-1 === nCurScript || nCurScript === nNewScript)
+			return false;
+
+		const COMMON = AscFonts.HB_SCRIPT.HB_SCRIPT_COMMON;
+		if (COMMON !== nCurScript && COMMON !== nNewScript)
+			return false;
+
+		const LTR = AscFonts.HB_DIRECTION.HB_DIRECTION_LTR;
+		return LTR === this.GetDirection(nCurScript) && LTR === this.GetDirection(nNewScript);
 	};
 	CTextShaper.prototype.private_CheckFont = function(nFontSlot)
 	{

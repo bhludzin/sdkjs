@@ -106,6 +106,10 @@
 		if (AscFonts.HB_SCRIPT.HB_SCRIPT_ARABIC === textScript)
 			result |= Asc.LigaturesType.Standard;
 		
+		// Pair kerning from the run's kern threshold (DrawingML a:rPr/@kern)
+		if (this.TextPr && this.TextPr.IsKerned())
+			result |= AscFonts.HB_FEATURE.HB_FEATURE_TYPE_KERNING;
+
 		return result;
 	};
 	CParagraphTextShaper.prototype.Shape = function(oParagraph)
@@ -324,6 +328,7 @@
 			&& t.RTL === oTextPr.RTL
 			&& t.Vanish === oTextPr.Vanish
 			&& t.Ligatures === oTextPr.Ligatures
+			&& t.IsKerned() === oTextPr.IsKerned()
 			&& t.RFonts.IsEqualSlot(oTextPr.RFonts, this.FontSlot));
 	};
 	CParagraphTextShaper.prototype.GetTextScript = function(nUnicode)
