@@ -165,7 +165,8 @@
 	};
 	CRunText.prototype.SetMetrics = function(nFontSize, nFontSlot, oTextPr)
 	{
-		let nFontCoef = 1;
+		let nFontCoef     = 1;
+		let isExactScript = false;
 
 		if (undefined !== nFontSlot)
 		{
@@ -195,19 +196,25 @@
 			}
 			
 			let isCoeffScript = oTextPr.VertAlign !== AscCommon.vertalign_Baseline;
+			let scriptCoef    = isCoeffScript ? oTextPr.GetScriptSizeCoef() : 1;
 
 			if (isCoeffScript && this.Flags & FLAGS_FONTKOEF_SMALLCAPS)
-				nFontCoef = smallcaps_and_script_koef;
+				nFontCoef = scriptCoef * smallcaps_Koef;
 			else if (isCoeffScript)
-				nFontCoef = AscCommon.vaKSize;
+				nFontCoef = scriptCoef;
 			else if (this.Flags & FLAGS_FONTKOEF_SMALLCAPS)
 				nFontCoef = smallcaps_Koef;
+
+			// PowerPoint scales superscript and subscript text exactly (2/3 of 13.5 pt is 9 pt).
+			isExactScript = isCoeffScript && AscWord.IsSlideScriptLayout();
 		}
 
 		// Разрешенные размеры шрифта только либо целое, либо целое/2. Даже после применения FontKoef, поэтому
 		// мы должны подкрутить коэффициент так, чтобы после домножения на него, у на получался разрешенный размер.
 		let _nFontSize = nFontSize;
-		if (1 !== nFontCoef)
+		if (isExactScript)
+			_nFontSize = AscWord.GetSlideScriptFontSize(_nFontSize, nFontCoef);
+		else if (1 !== nFontCoef)
 			_nFontSize = (((_nFontSize * nFontCoef * 2 + 0.5) | 0) / 2);
 
 		this.Flags = (this.Flags & 0xFFFF) | (((_nFontSize * 64) & 0xFFFF) << 16);

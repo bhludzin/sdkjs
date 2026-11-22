@@ -8957,11 +8957,16 @@ function BinaryPPTYLoader()
                 {
                     var baseline = s.GetLong();
 
+                    // a:rPr/@baseline is the shift in thousandths of a percent of the font size
+                    // (30000 = raised by 30%); it is kept, so slides place the text where PowerPoint does.
                     if (baseline < 0)
                         rPr.VertAlign = AscCommon.vertalign_SubScript;
                     else if (baseline > 0)
                         rPr.VertAlign = AscCommon.vertalign_SuperScript;
+                    else
+                        rPr.VertAlign = AscCommon.vertalign_Baseline;
 
+                    rPr.Baseline = baseline / 100000;
                     break;
                 }
                 case 3:

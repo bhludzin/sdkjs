@@ -2194,10 +2194,13 @@ function CBinaryFileWriter()
             oThis._WriteInt1(8, Math.round(rPr.Kern * 100));
         }
 
+        // The shift read from a:rPr/@baseline is written back while it still agrees with VertAlign.
         if (AscCommon.vertalign_SubScript == rPr.VertAlign)
-            oThis._WriteInt1(2, -25000);
+            oThis._WriteInt1(2, rPr.Baseline < 0 ? Math.round(rPr.Baseline * 100000) : -25000);
         else if (AscCommon.vertalign_SuperScript == rPr.VertAlign)
-            oThis._WriteInt1(2, 30000);
+            oThis._WriteInt1(2, rPr.Baseline > 0 ? Math.round(rPr.Baseline * 100000) : 30000);
+        else if (AscCommon.vertalign_Baseline === rPr.VertAlign && 0 === rPr.Baseline)
+            oThis._WriteInt1(2, 0);
 
         oThis.WriteUChar(g_nodeAttributeEnd);
 

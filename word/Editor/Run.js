@@ -3872,7 +3872,9 @@ ParaRun.prototype.Recalculate_Range = function(PRS, ParaPr, Depth)
 					let isLigature  = Item.IsLigature();
 					let GraphemeLen = isLigature ? Item.GetLigatureWidth() : LetterLen;
 					
-					let isBreakAfter = Item.IsSpaceAfter(textPr.RFonts.Hint);
+					// PowerPoint also breaks after an en dash, between digits ('8:34–35') as between letters.
+					let isBreakAfter = Item.IsSpaceAfter(textPr.RFonts.Hint)
+						|| (isSlideText && para_Text === ItemType && 0x2013 === Item.Value);
 
 					if (FirstItemOnLine
 						&& (X + SpaceLen + WordLen + GraphemeLen > XEnd

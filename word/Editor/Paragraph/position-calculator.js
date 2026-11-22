@@ -303,12 +303,7 @@
 		
 		let y = this.posInfo.y - ascent - run.getYOffset();
 		if (!isNearFootnoteRef)
-		{
-			if (AscCommon.vertalign_SubScript === textPr.VertAlign)
-				y -= textPr.FontSize * g_dKoef_pt_to_mm * AscCommon.vaKSub;
-			else if (AscCommon.vertalign_SuperScript === textPr.VertAlign)
-				y -= textPr.FontSize * g_dKoef_pt_to_mm * AscCommon.vaKSuper;
-		}
+			y -= textPr.FontSize * g_dKoef_pt_to_mm * textPr.GetScriptShift();
 		
 		let runParent = run.Parent;
 		if (run.IsMathRun() && runParent && runParent.bRoot && runParent.bMath_OneLine)
