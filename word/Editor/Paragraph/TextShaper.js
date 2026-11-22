@@ -51,6 +51,13 @@
 		this.AscFont   = false; // Специальный случай, когда используемый шрифт ASCW3, а не тот, что задан в настройках
 		
 		this.MaskSymbol = null; // Символ, который используется для маскирования текста в полях ввода
+
+		this.KernPrev  = null; // Last text or space item and its text properties (pair kerning across spaces)
+		this.KernSpace = null; // Space waiting for the item after it (pair kerning across spaces)
+
+		this.SlideText = false; // Paragraph follows PowerPoint's font slot rules (see GetFontSlot)
+		this.CSLang    = false; // The run's language is a complex-script one (he-IL, ar-SA, th-TH...)
+		this.CSContext = false; // Neutral characters at this point of the run take the cs font
 	}
 	CParagraphTextShaper.prototype = Object.create(AscFonts.CTextShaper.prototype);
 	CParagraphTextShaper.prototype.constructor = CParagraphTextShaper;
@@ -64,7 +71,12 @@
 		this.Ligatures = Asc.LigaturesType.None;
 		this.Spacing   = 0;
 		this.AscFont   = false;
-		
+		this.KernPrev  = null;
+		this.KernSpace = null;
+		this.SlideText = false;
+		this.CSLang    = false;
+		this.CSContext = false;
+
 		this.ClearBuffer();
 	};
 	CParagraphTextShaper.prototype.GetCodePoint = function(oItem)
@@ -96,6 +108,26 @@
 		let oTextPr = this.TextPr;
 		if (!oTextPr)
 			return AscWord.fontslot_None;
+
+		// PowerPoint sets complex scripts (Hebrew, Arabic, Thai, Indic...) in the cs font. Neutral
+		// characters (spaces, punctuation, digits, marks) take the cs font too in a run of a
+		// complex-script language (he-IL, ar-SA...), unless a letter of another script comes
+		// before them in the run; in other runs they keep the latin font. Measured on PowerPoint's
+		// PDF export. Called once per code point, in logical order.
+		if (this.SlideText)
+		{
+			if (AscWord.IsComplexScriptCodePoint(nUnicode))
+			{
+				this.CSContext = this.CSLang;
+				return AscWord.fontslot_CS;
+			}
+
+			let script = AscFonts.hb_get_script_by_unicode(nUnicode);
+			if (AscFonts.HB_SCRIPT.HB_SCRIPT_COMMON !== script && AscFonts.HB_SCRIPT.HB_SCRIPT_INHERITED !== script)
+				this.CSContext = false;
+			else if (this.CSContext)
+				return AscWord.fontslot_CS;
+		}
 
 		return AscWord.GetFontSlotByTextPr(nUnicode, oTextPr);
 	};
@@ -148,6 +180,7 @@
 			if (oItem.IsPdfText())
 			{
 				this.FlushWord();
+				this.private_ResetKerning();
 				this.private_HandlePdfText(oItem);
 			}
 			else if (!oItem.IsText())
@@ -155,19 +188,27 @@
 				this.FlushWord();
 				if (oItem.IsSpace())
 					this.private_HandleSpace(oItem);
+				else
+					this.private_ResetKerning();
 			}
 			else if (oItem.IsNBSP())
 			{
 				this.FlushWord();
+				this.private_ResetKerning();
 				this.private_HandleNBSP(oItem);
 			}
 			else if (oItem.IsDigit() && this.private_IsReplaceToHindiDigits())
 			{
 				this.FlushWord();
+				this.private_ResetKerning();
 				this.private_HandleHindiDigit(oItem);
 			}
 			else
 			{
+				if (this.KernSpace)
+					this.private_KernSpaceBefore(oItem);
+
+				this.KernPrev = {Item : oItem, TextPr : this.TextPr};
 				this.AppendToString(oItem);
 
 				if (oItem.IsSpaceAfter())
@@ -257,6 +298,9 @@
 		this.Paragraph = oRun.GetParagraph();
 		this.Parent    = oRunParent;
 		this.TextPr    = oTextPr;
+		this.SlideText = !!(this.Paragraph && this.Paragraph.IsSlideText && this.Paragraph.IsSlideText());
+		this.CSLang    = this.SlideText && !!(oTextPr.Lang && AscFormat.getComplexScriptForLanguage(oTextPr.Lang.Val));
+		this.CSContext = this.CSLang;
 		this.Spacing   = isCombForm ? 0 : oTextPr.Spacing;
 		this.Ligatures = isCombForm || Math.abs(this.Spacing) > 0.001 ? Asc.LigaturesType.None : oTextPr.Ligatures;
 		this.AscFont   = oRun.IsUseAscFont(oTextPr);
@@ -313,20 +357,110 @@
 	CParagraphTextShaper.prototype.private_HandleSpace = function(item)
 	{
 		let codePoint = this.MaskSymbol ? this.MaskSymbol : item.GetCodePoint();
-		
-		let fontInfo = this.TextPr.GetFontInfo(AscWord.fontslot_ASCII);
+
+		// Slide text: a space in a complex-script language run is set in the cs font unless a letter
+		// of another script comes before it (see GetFontSlot).
+		let fontSlot = this.SlideText && this.CSContext ? AscWord.fontslot_CS : AscWord.fontslot_ASCII;
+		let fontInfo = this.TextPr.GetFontInfo(fontSlot);
 		let grapheme = AscCommon.g_oTextMeasurer.GetGraphemeByUnicode(codePoint, fontInfo.Name, fontInfo.Style);
-		
+		if (AscWord.fontslot_CS === fontSlot)
+			this.ForceCheckFont = true;
+
 		let width   = AscFonts.GetGraphemeWidth(grapheme);
 		let enWidth = getEastAsiaEnWidth(fontInfo.Name, fontInfo.Style);
 
 		let layoutFontSize = this.private_GetLayoutFontSize(fontInfo.Size);
 		if (layoutFontSize > 0)
 			width = getLayoutAdvance(width, layoutFontSize);
-		
+
+		let kernFont = AscWord.fontslot_CS === fontSlot ? null : this.private_GetKerningFont(this.TextPr, codePoint, fontInfo);
+		if (kernFont)
+		{
+			let prev = this.KernPrev;
+			if (this.KernSpace)
+				prev = {Item : this.KernSpace.Item, TextPr : this.KernSpace.TextPr};
+
+			width += this.private_GetPairKerning(prev, kernFont, codePoint, true);
+		}
+
 		item.SetGrapheme(this.MaskSymbol ? grapheme : AscFonts.NO_GRAPHEME);
-		item.SetMetrics(fontInfo.Size, AscWord.fontslot_ASCII, this.TextPr);
+		item.SetMetrics(fontInfo.Size, fontSlot, this.TextPr);
 		item.SetWidth(width, this.TextPr, enWidth);
+
+		this.KernPrev  = null;
+		this.KernSpace = kernFont ? {Item : item, TextPr : this.TextPr, Font : kernFont, Width : width, EnWidth : enWidth} : null;
+	};
+	CParagraphTextShaper.prototype.private_ResetKerning = function()
+	{
+		this.KernPrev  = null;
+		this.KernSpace = null;
+	};
+	/**
+	 * PowerPoint applies a font's pair kerning across spaces too (Times New Roman space+A, A+space,
+	 * space+T...), while the shaper sees each word on its own and measures the space alone. The
+	 * kerning on both sides of a space is added to the space's width, so the words after it sit where
+	 * PowerPoint puts them and the space stays a separate item for line breaking and justification.
+	 * It applies to Latin and common characters in kerned runs (a:rPr/@kern) of the same font, style
+	 * and size on both sides, also across runs, in the presentation editor.
+	 * @returns {?{Name: string, Style: number, Size: number}} the font a space item kerns in, or null
+	 */
+	CParagraphTextShaper.prototype.private_GetKerningFont = function(textPr, codePoint, fontInfo)
+	{
+		if (!(Asc.editor && Asc.editor.isPresentationEditor) || null !== this.MaskSymbol || this.AscFont)
+			return null;
+
+		if (!textPr || !textPr.IsKerned() || textPr.VertAlign !== AscCommon.vertalign_Baseline)
+			return null;
+
+		let script = AscFonts.hb_get_script_by_unicode(codePoint);
+		if (AscFonts.HB_SCRIPT.HB_SCRIPT_LATIN !== script && AscFonts.HB_SCRIPT.HB_SCRIPT_COMMON !== script)
+			return null;
+
+		return {Name : fontInfo.Name, Style : fontInfo.Style, Size : fontInfo.Size};
+	};
+	/**
+	 * Pair kerning (mm per pt of font size) between the given item and a code point in the given font,
+	 * or 0 when they are not in the same kerning font.
+	 * @param {?{Item, TextPr}} other - the item before (isOtherFirst) or after the code point
+	 */
+	CParagraphTextShaper.prototype.private_GetPairKerning = function(other, font, codePoint, isOtherFirst)
+	{
+		if (!other || !other.Item || !other.TextPr)
+			return 0;
+
+		let otherCodePoint = other.Item.IsSpace() ? other.Item.GetCodePoint() : this.GetCodePoint(other.Item);
+		let otherSlot      = other.Item.IsSpace() ? AscWord.fontslot_ASCII : other.Item.GetFontSlot(other.TextPr);
+		let otherFont      = this.private_GetKerningFont(other.TextPr, otherCodePoint, other.TextPr.GetFontInfo(otherSlot));
+		if (!otherFont
+			|| otherFont.Name !== font.Name
+			|| otherFont.Style !== font.Style
+			|| Math.abs(otherFont.Size - font.Size) > 0.001)
+			return 0;
+
+		// Measuring sets the measurer's font; make the shaper set its own again.
+		this.ForceCheckFont = true;
+
+		return isOtherFirst
+			? getPairKerning(font.Name, font.Style, otherCodePoint, codePoint)
+			: getPairKerning(font.Name, font.Style, codePoint, otherCodePoint);
+	};
+	/**
+	 * Adds the kerning between the pending space and the text item that follows it to the space.
+	 * Called before the item is added to the shaper's string.
+	 */
+	CParagraphTextShaper.prototype.private_KernSpaceBefore = function(item)
+	{
+		let space = this.KernSpace;
+		this.KernSpace = null;
+
+		if (this.Buffer.length > 0)
+			return;
+
+		let kern = this.private_GetPairKerning({Item : item, TextPr : this.TextPr}, space.Font, space.Item.GetCodePoint(), false);
+		if (Math.abs(kern) < 1e-9)
+			return;
+
+		space.Item.SetWidth(space.Width + kern, space.TextPr, space.EnWidth);
 	};
 	/**
 	 * Font size (pt) at which PowerPoint's layout advances are rounded, or 0 when the
@@ -538,6 +672,66 @@
 	{
 		let eighths = Math.floor(advance * fontSize * 72 / 25.4 * 8 + 0.5 + 1e-6);
 		return eighths / 8 * 25.4 / 72 / fontSize;
+	}
+
+	// Font name + style -> "first,second" -> pair kerning (mm per pt of font size)
+	let pairKerning = {};
+	/**
+	 * Pair kerning between two code points in a font (mm per pt of font size): the advance the
+	 * shaper gives the pair with kerning on minus the advance with it off.
+	 * Must be called only while the shaper's string is empty: it shapes in the same buffer.
+	 */
+	function getPairKerning(fontName, fontStyle, first, second)
+	{
+		let fontKey = fontName + "|" + fontStyle;
+		let pairs   = pairKerning[fontKey];
+		if (!pairs)
+			pairs = pairKerning[fontKey] = {};
+
+		let pairKey = first + "," + second;
+		if (undefined !== pairs[pairKey])
+			return pairs[pairKey];
+
+		let kern = 0;
+		let measurer = AscCommon.g_oTextMeasurer;
+		measurer.SetFontInternal(fontName, AscFonts.MEASURE_FONTSIZE, fontStyle);
+		let fontFile = measurer.GetCurrentFont();
+		if (fontFile && fontFile.m_pFaceInfo && fontFile.GetGIDByUnicode(first) && fontFile.GetGIDByUnicode(second))
+		{
+			let fontId = AscCommon.FontNameMap.GetId(fontFile.m_pFaceInfo.family_name);
+			let kerned = shapePairWidth(fontId, fontStyle, fontFile, first, second, AscFonts.HB_FEATURE.HB_FEATURE_TYPE_KERNING);
+			let plain  = shapePairWidth(fontId, fontStyle, fontFile, first, second, 0);
+			if (null !== kerned && null !== plain)
+				kern = kerned - plain;
+
+			AscFonts.HB_StartString();
+		}
+
+		pairs[pairKey] = kern;
+		return kern;
+	}
+	/**
+	 * Shaped width (mm per pt of font size) of a two-code-point string, or null when it does not
+	 * shape into two graphemes.
+	 */
+	function shapePairWidth(fontId, fontStyle, fontFile, first, second, features)
+	{
+		let widths = [];
+		let collector = {
+			FlushGrapheme : function(grapheme, width)
+			{
+				widths.push(width);
+			}
+		};
+
+		AscFonts.HB_StartString();
+		AscFonts.HB_AppendToString(first);
+		AscFonts.HB_AppendToString(second);
+		AscFonts.HB_EndString();
+		AscFonts.HB_ShapeString(collector, fontId, fontStyle, fontFile, features,
+			AscFonts.HB_SCRIPT.HB_SCRIPT_LATIN, AscFonts.HB_DIRECTION.HB_DIRECTION_LTR, "en");
+
+		return 2 === widths.length ? widths[0] + widths[1] : null;
 	}
 
 	let enWidth = {};

@@ -3678,6 +3678,7 @@ ParaRun.prototype.Recalculate_Range = function(PRS, ParaPr, Depth)
     var RangeEndPos   = 0;
 
     var Para                = PRS.Paragraph;
+	var isSlideText         = Para.IsSlideText();
 
     var MoveToLBP           = PRS.MoveToLBP;
     var NewRange            = PRS.NewRange;
@@ -3857,6 +3858,15 @@ ParaRun.prototype.Recalculate_Range = function(PRS, ParaPr, Depth)
 						WordLen = 0;
 					}
 					
+					// PowerPoint breaks Latin text at any space: after a space even punctuation that may not
+					// otherwise start a line ('.', ',', ')', '%', a closing quote...) can, so a spaced ellipsis
+					// is not glued to the word before it. East Asian text keeps its line-start rules.
+					let canBeginLine = Item.CanBeAtBeginOfLine()
+						|| (isSlideText
+							&& para_Text === ItemType
+							&& SpaceLen > 0.001
+							&& !AscCommon.isEastAsianScript(Item.Value));
+
                     // При проверке, убирается ли слово, мы должны учитывать ширину предшествующих пробелов
 					let LetterLen   = Item.GetWidth();
 					let isLigature  = Item.IsLigature();
@@ -3948,7 +3958,7 @@ ParaRun.prototype.Recalculate_Range = function(PRS, ParaPr, Depth)
 						{
 							if (X + SpaceLen + LetterLen > XEnd)
 							{
-								if (para_Text === ItemType && !Item.CanBeAtBeginOfLine() && !PRS.LineBreakFirst)
+								if (para_Text === ItemType && !canBeginLine && !PRS.LineBreakFirst)
 								{
 									MoveToLBP = true;
 									NewRange  = true;
@@ -3970,7 +3980,7 @@ ParaRun.prototype.Recalculate_Range = function(PRS, ParaPr, Depth)
 							// тогда общую ширину пробелов прибавляем к ширине символа.
 							// Если разрыв были и с данного символа не может начинаться строка, тогда испоьльзуем
 							// предыдущий разрыв.
-							if (PRS.LineBreakFirst && !Item.CanBeAtBeginOfLine())
+							if (PRS.LineBreakFirst && !canBeginLine)
 							{
 								Word            = true;
 								FirstItemOnLine = true;
@@ -3983,7 +3993,7 @@ ParaRun.prototype.Recalculate_Range = function(PRS, ParaPr, Depth)
 							}
 							else
 							{
-								if (Item.CanBeAtBeginOfLine())
+								if (canBeginLine)
 								{
 									PRS.Set_LineBreakPos(Pos, FirstItemOnLine);
 									PRS.checkLastAutoHyphen();

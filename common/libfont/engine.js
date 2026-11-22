@@ -420,6 +420,8 @@ function onLoadFontsModule(window, undefined)
 	let   CLUSTER_MAX    = 0;
 	const LIGATURE       = 2;
 	const CODEPOINTS     = new Uint32Array(STRING_MAX_LEN);
+	const CODEPOINT_GIDS = new Int32Array(STRING_MAX_LEN); // The font's own glyph (cmap) for each code point
+	let   HAVE_GIDS      = false;
 
 	AscFonts.MEASURE_FONTSIZE        = FONTSIZE;
 	AscFonts.GRAPHEME_STRING_MAX_LEN = STRING_MAX_LEN;
@@ -433,19 +435,41 @@ function onLoadFontsModule(window, undefined)
 		this.clusterBuffer    = clusterBuffer;
 		this.codePoints       = codePointsBuffer;
 		this.codePointsCount  =  0
+		this.isRtl            = false;
 	}
-	CCodePointsCalculator.prototype.start = function(startCluster)
+	/**
+	 * @param {number} startCluster - 0, or for right-to-left text the string's length in bytes
+	 * @param {number} [rtlCodePoints] - for right-to-left text: the string's length in code points
+	 */
+	CCodePointsCalculator.prototype.start = function(startCluster, rtlCodePoints)
 	{
+		this.isRtl            = undefined !== rtlCodePoints;
 		this.currentCluster   = startCluster;
-		this.currentCodePoint = 0;
+		this.currentCodePoint = this.isRtl ? rtlCodePoints : 0;
 		this.codePointsCount  = 0;
 	}
 	CCodePointsCalculator.prototype.calculate = function(cluster)
 	{
+		let nCodePointsCount = 0;
+
+		if (this.isRtl)
+		{
+			// Right to left: clusters come from the end of the string, so the code points of a
+			// cluster are the ones just before the previous cluster's. (Counting from the string's
+			// start gave every glyph the code points of its mirror cluster, so PDF output wrote
+			// and drew the wrong letters.)
+			while (this.currentCluster > cluster && this.currentCodePoint - nCodePointsCount > 0)
+			{
+				this.currentCluster -= this.clusterBuffer[this.currentCodePoint - nCodePointsCount - 1];
+				++nCodePointsCount;
+			}
+			this.currentCodePoint -= nCodePointsCount;
+			this.codePointsCount   = nCodePointsCount;
+			return;
+		}
+
 		this.currentCodePoint += this.codePointsCount;
 
-		let nCodePointsCount = 0;
-		
 		if (cluster < this.currentCluster)
 		{
 			while (this.currentCluster > cluster)
@@ -473,6 +497,47 @@ function onLoadFontsModule(window, undefined)
 	{
 		return this.codePoints[this.currentCodePoint + nPos];
 	};
+	/**
+	 * The font's cmap glyph of a code point of the cluster, or -1 when unknown.
+	 */
+	CCodePointsCalculator.prototype.getGid = function(nPos)
+	{
+		return HAVE_GIDS ? CODEPOINT_GIDS[this.currentCodePoint + nPos] : -1;
+	};
+	CCodePointsCalculator.prototype.hasGids = function()
+	{
+		return HAVE_GIDS;
+	};
+	/**
+	 * Looks up the cmap glyph of every code point of the string, for strings with combining marks or
+	 * complex scripts, where HarfBuzz composes, decomposes and reorders glyphs within a cluster.
+	 * Done before shaping: the font engine is not called while the shaped glyphs are read.
+	 */
+	function prepareCodePointGids(fontFile)
+	{
+		HAVE_GIDS = false;
+		if (!fontFile || !fontFile.GetGIDByUnicode)
+			return;
+
+		let isNeeded = false;
+		for (let index = 0; index < CLUSTER_LEN; ++index)
+		{
+			if (CODEPOINTS[index] >= 0x0300)
+			{
+				isNeeded = true;
+				break;
+			}
+		}
+		if (!isNeeded)
+			return;
+
+		for (let index = 0; index < CLUSTER_LEN; ++index)
+		{
+			let gid = fontFile.GetGIDByUnicode(CODEPOINTS[index]);
+			CODEPOINT_GIDS[index] = gid ? gid : -1;
+		}
+		HAVE_GIDS = true;
+	}
 	const CODEPOINTS_CALCULATOR = new CCodePointsCalculator(CODEPOINTS, CLUSTER);
 
 
@@ -484,6 +549,7 @@ function onLoadFontsModule(window, undefined)
 		STRING_LEN  = 0;
 		CLUSTER_LEN = 0;
 		CLUSTER_MAX = 0;
+		HAVE_GIDS   = false;
 	};
 	AscFonts.HB_AppendToString = function(code)
 	{
@@ -556,13 +622,15 @@ function onLoadFontsModule(window, undefined)
 		if (!STRING_POINTER)
 			return;
 
+		prepareCodePointGids(fontFile);
+
 		let retObj = AscFonts.HB_ShapeText(fontFile, STRING_POINTER, features, script, direction, language, READER);
 		if (retObj["error"])
 			return;
-		
+
 		let isRtl = direction === AscFonts.HB_DIRECTION.HB_DIRECTION_RTL;
 		
-		CODEPOINTS_CALCULATOR.start(isRtl ? CLUSTER_MAX : 0);
+		CODEPOINTS_CALCULATOR.start(isRtl ? CLUSTER_MAX : 0, isRtl ? CLUSTER_LEN : undefined);
 		let prevCluster = -1;
 		let type, flags, gid, cluster, x_advance, y_advance, x_offset, y_offset;
 		let isLigature = false;

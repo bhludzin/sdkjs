@@ -5295,8 +5295,33 @@ function BinaryPPTYLoader()
                 }
                 case 3:
                 {
+                    // a:font script typeface: the theme's font per script (Hebr, Arab, Jpan...)
                     var _len = s.GetULong();
-                    s.Skip2(_len);
+                    var _end_fonts = s.cur + _len;
+                    var _count = s.GetULong();
+                    for (var _i = 0; _i < _count && s.cur < _end_fonts; ++_i)
+                    {
+                        s.Skip2(1); // type
+                        var _end_font = s.cur + s.GetULong() + 4;
+                        s.Skip2(1); // start attributes
+                        var _script = "", _typeface = "";
+                        while (true)
+                        {
+                            var _fat = s.GetUChar();
+                            if (_fat == g_nodeAttributeEnd)
+                                break;
+                            if (0 == _fat)
+                                _script = s.GetString2();
+                            else if (1 == _fat)
+                                _typeface = s.GetString2();
+                            else
+                                break;
+                        }
+                        s.Seek2(_end_font);
+                        if (_script && fontcolls.setScriptFont)
+                            fontcolls.setScriptFont(_script, _typeface);
+                    }
+                    s.Seek2(_end_fonts);
                     break;
                 }
                 default:

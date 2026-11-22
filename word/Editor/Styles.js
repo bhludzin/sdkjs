@@ -13857,10 +13857,14 @@ CTextPr.prototype.ReplaceThemeFonts = function(oFontScheme)
 			this.RFonts.HAnsi.Index = -1;
 		}
 
+		// Slide text: an empty theme cs font stands for the theme's script font of the run's
+		// language (see FontScheme.checkSlideCSFont).
+		let isSlide = !!(Asc.editor && Asc.editor.isPresentationEditor && oFontScheme.checkSlideCSFont);
+		let csLang  = this.Lang ? this.Lang.Val : undefined;
 		if (this.RFonts.CSTheme)
 		{
 			this.RFonts.CS = {
-				Name  : oFontScheme.checkFont(this.RFonts.CSTheme),
+				Name  : isSlide ? oFontScheme.checkSlideCSFont(this.RFonts.CSTheme, csLang) : oFontScheme.checkFont(this.RFonts.CSTheme),
 				Index : -1
 			};
 
@@ -13868,7 +13872,7 @@ CTextPr.prototype.ReplaceThemeFonts = function(oFontScheme)
 		}
 		else if (this.RFonts.CS)
 		{
-			this.RFonts.CS.Name  = oFontScheme.checkFont(this.RFonts.CS.Name);
+			this.RFonts.CS.Name  = isSlide ? oFontScheme.checkSlideCSFont(this.RFonts.CS.Name, csLang) : oFontScheme.checkFont(this.RFonts.CS.Name);
 			this.RFonts.CS.Index = -1;
 		}
 	}

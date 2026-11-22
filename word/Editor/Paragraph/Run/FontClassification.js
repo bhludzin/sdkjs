@@ -255,10 +255,24 @@ const fontslot_Unknown  = 0x10;
 	{
 		return GetFontSlot(nUnicode, oTextPr.RFonts.Hint, oTextPr.Lang.EastAsia, oTextPr.CS, oTextPr.RTL);
 	}
+	/**
+	 * Whether a character belongs to a complex script, which DrawingML (PowerPoint) sets in the
+	 * cs font: Hebrew, Arabic, Syriac, Thaana, N'Ko, Indic, Thai, Lao, Tibetan, Khmer.
+	 */
+	function IsComplexScriptCodePoint(nUnicode)
+	{
+		return ((nUnicode >= 0x0590 && nUnicode <= 0x08FF)  // Hebrew .. Arabic Extended-A
+			|| (nUnicode >= 0x0900 && nUnicode <= 0x0DFF)   // Devanagari .. Sinhala
+			|| (nUnicode >= 0x0E00 && nUnicode <= 0x0FFF)   // Thai, Lao, Tibetan
+			|| (nUnicode >= 0x1780 && nUnicode <= 0x17FF)   // Khmer
+			|| (nUnicode >= 0xFB1D && nUnicode <= 0xFDFF)   // Hebrew, Arabic presentation forms
+			|| (nUnicode >= 0xFE70 && nUnicode <= 0xFEFF && 0xFEFF !== nUnicode)); // Arabic presentation forms-B
+	}
 	//--------------------------------------------------------export----------------------------------------------------
 	window['AscWord'] = window['AscWord'] || {};
 	window['AscWord'].GetFontSlot         = GetFontSlot;
 	window['AscWord'].GetFontSlotByTextPr = GetFontSlotByTextPr;
+	window['AscWord'].IsComplexScriptCodePoint = IsComplexScriptCodePoint;
 
 	window['AscWord'].fontslot_None     = fontslot_None;
 	window['AscWord'].fontslot_ASCII    = fontslot_ASCII;
