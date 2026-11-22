@@ -1338,6 +1338,9 @@ Paragraph.prototype.private_RecalculateLineMetrics     = function(CurLine, CurPa
     // Рассчитаем метрики строки
     this.Lines[CurLine].Metrics.Update( PRS.LineTextAscent, PRS.LineTextAscent2, PRS.LineTextDescent, PRS.LineAscent, PRS.LineDescent, ParaPr );
 
+	if (this.IsSlideText())
+		this.Lines[CurLine].Metrics.ApplySlideLineSpacing(ParaPr);
+
 	if (true === PRS.End && true !== PRS.EmptyLine && true !== PRS.TextOnLine && Math.abs(this.Lines[CurLine].Metrics.Descent - this.Lines[CurLine].Metrics.TextDescent) < 0.001)
 		this.Lines[CurLine].Metrics.Descent = 0;
 };
@@ -1556,6 +1559,17 @@ Paragraph.prototype.private_RecalculateLinePosition    = function(CurLine, CurPa
 
 		if (!this.Parent.IsCalculatingContinuousSectionBottomLine() && false === this.IsTableCellContent() && Bottom > this.YLimit && Bottom - this.YLimit <= ParaPr.Spacing.After)
 			Bottom = this.YLimit;
+	}
+
+	// PowerPoint measures a text box's text (for anchoring and autofit) down to the last line's text descent,
+	// leaving out the rest of a line-spacing line below it (see CParaLineMetrics.ApplySlideLineSpacing).
+	if (true === PRS.End
+		&& null === this.Get_DocumentNext()
+		&& this.IsSlideText()
+		&& CParaLineMetrics.IsSlideLineSpacing(ParaPr.Spacing))
+	{
+		let metrics = this.Lines[CurLine].Metrics;
+		Bottom = Bottom2 + Math.max(0, metrics.TextDescent - metrics.Descent);
 	}
 
 	this.Lines[CurLine].Top    = Top    - this.Pages[CurPage].Y;
@@ -3077,6 +3091,58 @@ CParaLineMetrics.prototype =
         }
         return LineGap;
     }
+};
+/**
+ * Whether slide text with this spacing is laid out by ApplySlideLineSpacing: percentage spacing other
+ * than single, or exact spacing.
+ * @param {AscWord.ParaSpacing} spacing - compiled paragraph spacing
+ * @returns {boolean}
+ */
+CParaLineMetrics.IsSlideLineSpacing = function(spacing)
+{
+	return ((Asc.linerule_Auto === spacing.LineRule && Math.abs(spacing.Line - 1) > 1e-6)
+		|| Asc.linerule_Exact === spacing.LineRule);
+};
+/**
+ * Places a line of slide text under line spacing other than single the way PowerPoint does
+ * (measured on PowerPoint's PDF export, issue I-017). The line is H high: the spacing percentage of
+ * the text height (TextAscent + TextDescent, 1.2 em in the presentation editor) or the exact spacing.
+ * A quarter of H lies below the baseline, plus however much the text's descent exceeds a quarter of the
+ * single line height; under spacing of single height or less the part below the baseline is never more
+ * than the text's descent. The rest of H lies above the baseline. Word's rule, which keeps the text's
+ * ascent and adds or removes the whole difference below or above the line, puts the first baseline
+ * 7.6 pt too high in 18 pt text at 150% and 0.44 pt too high at 80%.
+ *
+ * Taller inline objects keep their extra height on each side under percentage spacing; exact spacing
+ * is the line height whatever the line holds.
+ *
+ * The line keeps its text descent below the baseline (Descent), and LineGap holds the rest of the part
+ * below, so the last line of a text box can end at its descent (see private_RecalculateLinePosition).
+ * When the part below is less than the descent, Descent is that part and LineGap is 0.
+ * @param {AscWord.CParaPr} paraPr - compiled paragraph properties
+ */
+CParaLineMetrics.prototype.ApplySlideLineSpacing = function(paraPr)
+{
+	let spacing    = paraPr.Spacing;
+	let textHeight = this.TextAscent + this.TextDescent;
+	if (textHeight < 0.001 || !CParaLineMetrics.IsSlideLineSpacing(spacing))
+		return;
+
+	let isExact      = (Asc.linerule_Exact === spacing.LineRule);
+	let lineHeight   = isExact ? Math.max(25.4 / 72, spacing.Line) : textHeight * spacing.Line;
+	let extraAscent  = isExact ? 0 : Math.max(0, this.Ascent - this.TextAscent);
+	let extraDescent = isExact ? 0 : Math.max(0, this.Descent - this.TextDescent);
+
+	let textBelow = lineHeight / 4 + Math.max(0, this.TextDescent - textHeight / 4);
+	if (lineHeight <= textHeight + 1e-6)
+		textBelow = Math.min(textBelow, this.TextDescent);
+
+	let below   = textBelow + extraDescent;
+	let descent = this.TextDescent + extraDescent;
+
+	this.Ascent  = lineHeight - textBelow + extraAscent;
+	this.Descent = Math.min(descent, below);
+	this.LineGap = below - this.Descent;
 };
 CParaLineMetrics.prototype.Copy = function()
 {

@@ -11275,14 +11275,12 @@ Paragraph.prototype.Internal_CompiledParaPrPresentation = function(Lvl, bNoMerge
 		Pr.TextPr.Merge(TableStyle.TextPr);
 	}
 	Pr.ParaPr.StyleTabs = ( Pr.ParaPr.Tabs ? Pr.ParaPr.Tabs.Copy() : new CParaTabs() );
-	if(Pr.ParaPr.LnSpcReduction !== undefined && Pr.ParaPr.LnSpcReduction !== null)
-	{
-		let Spacing = Pr.ParaPr.Spacing;
-		if(Spacing.LineRule === Asc.linerule_Auto)
-		{
-			Spacing.Line = Spacing.Line - Pr.ParaPr.LnSpcReduction;
-		}
-	}
+
+	// PowerPoint takes normAutofit lnSpcReduction off the paragraph's own percentage spacing too (lnSpc 100%
+	// with a 20% reduction is laid out at 80%), so slide text applies it after the direct properties.
+	let isSlideText = this.IsSlideText();
+	if(!isSlideText)
+		this.private_ApplyLnSpcReduction(Pr.ParaPr);
 
 	if(!(bNoMergeDefault === true))
 	{
@@ -11290,6 +11288,9 @@ Paragraph.prototype.Internal_CompiledParaPrPresentation = function(Lvl, bNoMerge
 		if (this.Pr.DefaultRunPr)
 			Pr.TextPr.Merge(this.Pr.DefaultRunPr);
 	}
+
+	if(isSlideText)
+		this.private_ApplyLnSpcReduction(Pr.ParaPr);
 	Pr.TextPr.Color.Auto = false;
 	
 	let logicDocument = this.GetLogicDocument();
@@ -11302,6 +11303,20 @@ Paragraph.prototype.Internal_CompiledParaPrPresentation = function(Lvl, bNoMerge
 	}
 
 	return Pr;
+};
+/**
+ * Takes the text body's normAutofit lnSpcReduction off percentage line spacing (lnSpc 90% with a 10%
+ * reduction is 80%). Exact spacing is kept, as in PowerPoint.
+ * @param {AscWord.CParaPr} paraPr - compiled paragraph properties, changed in place
+ */
+Paragraph.prototype.private_ApplyLnSpcReduction = function(paraPr)
+{
+	if (undefined === paraPr.LnSpcReduction || null === paraPr.LnSpcReduction)
+		return;
+
+	let spacing = paraPr.Spacing;
+	if (spacing.LineRule === Asc.linerule_Auto)
+		spacing.Line = spacing.Line - paraPr.LnSpcReduction;
 };
 Paragraph.prototype.getCompiledPrFromStyle = function()
 {
