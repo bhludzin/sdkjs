@@ -3210,6 +3210,10 @@ Paragraph.prototype.drawRunContentLines = function(CurPage, pGraphics, drawState
 		var aDUnderline = PDSL.DUnderline;
 		var aFormBorder = PDSL.FormBorder;
 
+		// Slide text decorations are stored by their centre (ParagraphLineDrawState.updateSlideStrikeoutUnderlinePos):
+		// single lines are drawn centred on it, double lines from the top of the gap between them
+		let decorationAlign = PDSL.slideDecoration ? c_oAscLineDrawingRule.Center : c_oAscLineDrawingRule.Top;
+
 		// Рисуем зачеркивание
 		pGraphics.Start_Command(AscFormat.DRAW_COMMAND_LINE, Line, CurLine, AscFormat.CLineStructure_DrawType_Strikeouts);
 		var Element = aStrikeout.Get_Next();
@@ -3221,7 +3225,7 @@ Paragraph.prototype.drawRunContentLines = function(CurPage, pGraphics, drawState
 			}
 
 			pGraphics.p_color(Element.r, Element.g, Element.b, 255);
-			pGraphics.drawHorLine(c_oAscLineDrawingRule.Top, Element.y0, Element.x0, Element.x1, Element.w);
+			pGraphics.drawHorLine(decorationAlign, Element.y0, Element.x0, Element.x1, Element.w);
 			if (pGraphics.m_bIsTextDrawer)
 			{
 				pGraphics.addGroundElement(Element);
@@ -3241,7 +3245,7 @@ Paragraph.prototype.drawRunContentLines = function(CurPage, pGraphics, drawState
 			}
 
 			pGraphics.p_color(Element.r, Element.g, Element.b, 255);
-			pGraphics.drawHorLine2(c_oAscLineDrawingRule.Top, Element.y0, Element.x0, Element.x1, Element.w);
+			pGraphics.drawHorLine2(c_oAscLineDrawingRule.Top, PDSL.slideDecoration ? Element.y0 - Element.w / 2 : Element.y0, Element.x0, Element.x1, Element.w);
 			if (pGraphics.m_bIsTextDrawer)
 			{
 				pGraphics.addGroundElement(Element);
@@ -3252,7 +3256,10 @@ Paragraph.prototype.drawRunContentLines = function(CurPage, pGraphics, drawState
 
 		// Рисуем подчеркивание
 		pGraphics.Start_Command(AscFormat.DRAW_COMMAND_LINE, Line, CurLine, AscFormat.CLineStructure_DrawType_Underlines);
-		aUnderline.Correct_w_ForUnderline();
+		if (PDSL.slideDecoration)
+			aUnderline.BlendSlideUnderlines();
+		else
+			aUnderline.Correct_w_ForUnderline();
 		Element = aUnderline.Get_Next();
 		while (null != Element)
 		{
@@ -3262,7 +3269,7 @@ Paragraph.prototype.drawRunContentLines = function(CurPage, pGraphics, drawState
 			}
 
 			pGraphics.p_color(Element.r, Element.g, Element.b, 255);
-			pGraphics.drawHorLine(0, Element.y0, Element.x0, Element.x1, Element.w);
+			pGraphics.drawHorLine(decorationAlign, Element.y0, Element.x0, Element.x1, Element.w);
 			if (pGraphics.m_bIsTextDrawer)
 			{
 				pGraphics.addGroundElement(Element);
@@ -3281,7 +3288,7 @@ Paragraph.prototype.drawRunContentLines = function(CurPage, pGraphics, drawState
 			}
 
 			pGraphics.p_color(Element.r, Element.g, Element.b, 255);
-			pGraphics.drawHorLine2(c_oAscLineDrawingRule.Top, Element.y0, Element.x0, Element.x1, Element.w);
+			pGraphics.drawHorLine2(c_oAscLineDrawingRule.Top, PDSL.slideDecoration ? Element.y0 - Element.w / 2 : Element.y0, Element.x0, Element.x1, Element.w);
 			if (pGraphics.m_bIsTextDrawer)
 			{
 				pGraphics.addGroundElement(Element);
@@ -19973,14 +19980,77 @@ function CParaDrawingRangeHorizontalLines()
 }
 CParaDrawingRangeHorizontalLines.prototype = Object.create(CParaDrawingRangeLines.prototype);
 CParaDrawingRangeHorizontalLines.prototype.constructor = CParaDrawingRangeHorizontalLines;
-CParaDrawingRangeHorizontalLines.prototype.set = function(y, w)
+/**
+ * @param y {number}
+ * @param w {number}
+ * @param [base] {number} slide text: the grid-snapped baseline the line hangs from (see BlendSlideUnderlines)
+ */
+CParaDrawingRangeHorizontalLines.prototype.set = function(y, w, base)
 {
-	this.y = y;
-	this.w = w;
+	this.y    = y;
+	this.w    = w;
+	this.base = base;
 };
 CParaDrawingRangeHorizontalLines.prototype.Add = function(x0, x1, color, additional, additional2)
 {
-	return CParaDrawingRangeLines.prototype.Add.call(this, this.y, this.y, x0, x1, this.w, color.r, color.g, color.b, additional, additional2);
+	CParaDrawingRangeLines.prototype.Add.call(this, this.y, this.y, x0, x1, this.w, color.r, color.g, color.b, additional, additional2);
+	this.Elements[this.Elements.length - 1].Base = this.base;
+};
+/**
+ * Slide text: PowerPoint draws touching underlines that hang from the same baseline as one line,
+ * whose top and bottom edges are the width-weighted means of the runs' own, each rounded to the
+ * 1/600-inch grid (13.5 + 24 pt Calibri: runs at 13-20 and 23-36 steps below the baseline become one
+ * line at 17-26). Lines are stored by their centre.
+ */
+CParaDrawingRangeHorizontalLines.prototype.BlendSlideUnderlines = function()
+{
+	const GRID = 25.4 / 600;
+	let elements = this.Elements;
+	let start = 0;
+	while (start < elements.length)
+	{
+		let end = start + 1;
+		while (end < elements.length)
+		{
+			let prev = elements[end - 1], cur = elements[end];
+			if (undefined === cur.Base || undefined === prev.Base || Math.abs(cur.Base - prev.Base) > 0.001
+				|| (Math.abs(prev.x1 - cur.x0) > 0.001 && Math.abs(cur.x1 - prev.x0) > 0.001))
+				break;
+			++end;
+		}
+
+		let same = true;
+		for (let i = start + 1; i < end; ++i)
+		{
+			if (Math.abs(elements[i].y0 - elements[start].y0) > 0.001 || Math.abs(elements[i].w - elements[start].w) > 0.001)
+				same = false;
+		}
+
+		if (!same)
+		{
+			let sumW = 0, sumTop = 0, sumBottom = 0;
+			for (let i = start; i < end; ++i)
+			{
+				let el    = elements[i];
+				let width = Math.abs(el.x1 - el.x0);
+				sumW      += width;
+				sumTop    += width * (el.y0 - el.w / 2 - el.Base) / GRID;
+				sumBottom += width * (el.y0 + el.w / 2 - el.Base) / GRID;
+			}
+			if (sumW > 0.001)
+			{
+				let top    = Math.floor(sumTop / sumW + 0.5);
+				let bottom = Math.max(top + 1, Math.floor(sumBottom / sumW + 0.5));
+				let thick  = (bottom - top) * GRID;
+				for (let i = start; i < end; ++i)
+				{
+					elements[i].y0 = elements[i].y1 = elements[start].Base + top * GRID + thick / 2;
+					elements[i].w  = thick;
+				}
+			}
+		}
+		start = end;
+	}
 };
 
 

@@ -87,7 +87,14 @@
 			if (!AscFonts.g_fonts_streams[stream_index])
 				return null;
 
-			return fontManager._engine.openFont(AscFonts.g_fonts_streams[stream_index], faceindex);
+			let font = fontManager._engine.openFont(AscFonts.g_fonts_streams[stream_index], faceindex);
+			if (font)
+			{
+				// Lets the font read tables the engine does not report (CFontFile.GetDecorationMetrics)
+				font.m_nStreamIndex     = stream_index;
+				font.m_nStreamFaceIndex = faceindex;
+			}
+			return font;
 		};
 
 		this.LockFont = function(stream_index, fontName, faceIndex, fontSize, _ext, fontManager)

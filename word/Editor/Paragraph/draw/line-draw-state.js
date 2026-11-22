@@ -49,6 +49,7 @@
 		
 		this.ulTrailSpace     = false;
 		this.activePermRanges = false;
+		this.slideDecoration  = false;
 		
 		this.Strikeout   = new CParaDrawingRangeHorizontalLines();
 		this.DStrikeout  = new CParaDrawingRangeHorizontalLines();
@@ -116,6 +117,8 @@
 	{
 		this.Paragraph = this.drawState.getParagraph();
 		this.Graphics  = this.drawState.getGraphics();
+		
+		this.slideDecoration = !!(this.Paragraph && this.Paragraph.IsSlideText());
 		
 		this.logicDocument = this.GetLogicDocument();
 		if (this.logicDocument && this.logicDocument.IsDocumentEditor())
@@ -572,6 +575,79 @@
 		this.Underline.set(underlineY, lineW);
 		this.DUnderline.set(underlineY, lineW);
 		this.Spelling.set(underlineY, lineW);
+		
+		if (this.slideDecoration && textPr && (textPr.Underline || textPr.Strikeout || textPr.DStrikeout) && !run.IsMathRun())
+			this.updateSlideStrikeoutUnderlinePos(run, fontSize, vertAlign, textPr);
+	};
+	/**
+	 * Slide text: underline and strikeout as PowerPoint draws them, from the face's own metrics
+	 * (underline top at post.underlinePosition with post.underlineThickness, strikeout top at
+	 * OS/2 yStrikeoutPosition with yStrikeoutSize), on a 1/600-inch grid: the baseline rounded down to
+	 * the grid, each offset and thickness rounded to whole grid steps. A strikeout follows a script
+	 * run's own size and baseline, and so does a subscript's underline; a superscript's underline stays
+	 * on the line's baseline at the run's full size.
+	 * The lines are stored by their centre (see Paragraph.drawRunContentLines). Keeps the positions
+	 * already set if the face's metrics are unavailable.
+	 */
+	ParagraphLineDrawState.prototype.updateSlideStrikeoutUnderlinePos = function(run, fontSize, vertAlign, textPr)
+	{
+		let fontSlot = AscWord.fontslot_None;
+		for (let pos = 0, count = run.Content.length; pos < count; ++pos)
+		{
+			let slot = run.Content[pos].GetFontSlot(textPr);
+			if (slot === AscWord.fontslot_ASCII || slot === AscWord.fontslot_CS
+				|| slot === AscWord.fontslot_EastAsia || slot === AscWord.fontslot_HAnsi)
+			{
+				fontSlot = slot;
+				break;
+			}
+		}
+		if (AscWord.fontslot_None === fontSlot)
+			fontSlot = textPr.CS || textPr.RTL ? AscWord.fontslot_CS : AscWord.fontslot_ASCII;
+		
+		let metrics = textPr.GetDecorationMetrics(fontSlot, this.Paragraph.GetTheme());
+		if (!metrics || metrics.UnderlineThickness <= 0 || metrics.StrikeoutSize <= 0)
+			return;
+		
+		if (AscWord.fontslot_CS === fontSlot)
+			fontSize = textPr.FontSizeCS;
+		
+		const GRID    = 25.4 / 600; // mm
+		const PT_GRID = 600 / 72;   // grid steps per point
+		let steps = function(fontUnits, size)
+		{
+			return Math.max(0, Math.floor(Math.abs(fontUnits) / metrics.UnitsPerEm * size * PT_GRID + 0.5 + 1e-9));
+		};
+		let snapBase = function(y)
+		{
+			return Math.floor(y / GRID + 1e-6) * GRID;
+		};
+		
+		let isSub    = AscCommon.vertalign_SubScript === vertAlign;
+		let isSuper  = AscCommon.vertalign_SuperScript === vertAlign;
+		let baseline = this.Baseline - this.yOffset;
+		
+		let scriptSize     = fontSize;
+		let scriptBaseline = baseline;
+		if (isSub || isSuper)
+		{
+			scriptSize      = fontSize * textPr.GetScriptSizeCoef();
+			scriptBaseline -= textPr.GetScriptShift() * fontSize * g_dKoef_pt_to_mm;
+		}
+		
+		let strikeBase = snapBase(scriptBaseline);
+		let strikeW    = Math.max(1, steps(metrics.StrikeoutSize, scriptSize)) * GRID;
+		let strikeTop  = strikeBase + (metrics.StrikeoutPosition < 0 ? 1 : -1) * steps(metrics.StrikeoutPosition, scriptSize) * GRID;
+		
+		let underlineSize = isSuper ? fontSize : scriptSize;
+		let underlineBase = snapBase(isSuper ? baseline : scriptBaseline);
+		let underlineW    = Math.max(1, steps(metrics.UnderlineThickness, underlineSize)) * GRID;
+		let underlineTop  = underlineBase + (metrics.UnderlinePosition < 0 ? 1 : -1) * steps(metrics.UnderlinePosition, underlineSize) * GRID;
+		
+		this.Strikeout.set(strikeTop + strikeW / 2, strikeW);
+		this.DStrikeout.set(strikeTop + strikeW / 2, strikeW);
+		this.Underline.set(underlineTop + underlineW / 2, underlineW, underlineBase);
+		this.DUnderline.set(underlineTop + underlineW / 2, underlineW);
 	};
 	ParagraphLineDrawState.prototype.updateColor = function(textPr)
 	{

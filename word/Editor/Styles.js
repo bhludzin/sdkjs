@@ -15371,6 +15371,43 @@ CTextPr.prototype.GetTextMetrics = function(nFontFlags, oTheme)
 
 	return oMetrics;
 };
+/**
+ * Underline and strikeout metrics (in font units) of the face that draws this text in the given font
+ * slots (the first of Latin, complex script, East Asian, HAnsi that is set). Used for slide text,
+ * which PowerPoint decorates with the face's own post and OS/2 metrics.
+ * @param {number} fontSlots - mask of AscWord.fontslot_*
+ * @param {object} theme
+ * @returns {?{UnitsPerEm: number, UnderlinePosition: number, UnderlineThickness: number,
+ *   StrikeoutPosition: number, StrikeoutSize: number}}
+ */
+CTextPr.prototype.GetDecorationMetrics = function(fontSlots, theme)
+{
+	let textPr = this;
+	if (theme && this.RFonts.HaveThemeFonts())
+	{
+		textPr = this.Copy();
+		textPr.ReplaceThemeFonts(theme.themeElements.fontScheme);
+	}
+
+	let fontSlot = AscWord.fontslot_ASCII;
+	if (!(fontSlots & AscWord.fontslot_ASCII))
+	{
+		if (fontSlots & AscWord.fontslot_CS)
+			fontSlot = AscWord.fontslot_CS;
+		else if (fontSlots & AscWord.fontslot_EastAsia)
+			fontSlot = AscWord.fontslot_EastAsia;
+		else if (fontSlots & AscWord.fontslot_HAnsi)
+			fontSlot = AscWord.fontslot_HAnsi;
+	}
+
+	let fontInfo = textPr.GetFontInfo(fontSlot);
+	if (!fontInfo.Name)
+		return null;
+
+	g_oTextMeasurer.SetFontInternal(fontInfo.Name, fontInfo.Size, fontInfo.Style);
+	let font = g_oTextMeasurer.m_oManager ? g_oTextMeasurer.m_oManager.m_pFont : null;
+	return font && font.GetDecorationMetrics ? font.GetDecorationMetrics() : null;
+};
 CTextPr.prototype.GetFontInfo = function(nFontSlot)
 {
 	let sFontName = this.RFonts.Ascii.Name;
