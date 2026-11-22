@@ -5126,6 +5126,11 @@ ParaRun.prototype.Recalculate_LineMetrics = function(PRS, ParaPr, _CurLine, _Cur
 			}
 			case para_Space:
 			{
+				// In PowerPoint a space sizes its line like text does: a line holding only spaces takes
+				// its height from them, and a larger space makes a text line taller.
+				if (Para.IsSlideText())
+					UpdateLineMetricsText = true;
+
 				break;
 			}
 			case para_Drawing:
