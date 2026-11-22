@@ -1334,6 +1334,10 @@ Paragraph.prototype.private_RecalculateLineMetrics     = function(CurLine, CurPa
 				PRS.LineDescent = EndTextDescent;
 		}
 	}
+	else if (this.IsSlideText())
+	{
+		this.private_ApplySlideLineFonts(PRS);
+	}
 
     // Рассчитаем метрики строки
     this.Lines[CurLine].Metrics.Update( PRS.LineTextAscent, PRS.LineTextAscent2, PRS.LineTextDescent, PRS.LineAscent, PRS.LineDescent, ParaPr );
@@ -1343,6 +1347,66 @@ Paragraph.prototype.private_RecalculateLineMetrics     = function(CurLine, CurPa
 
 	if (true === PRS.End && true !== PRS.EmptyLine && true !== PRS.TextOnLine && Math.abs(this.Lines[CurLine].Metrics.Descent - this.Lines[CurLine].Metrics.TextDescent) < 0.001)
 		this.Lines[CurLine].Metrics.Descent = 0;
+};
+
+/**
+ * Slide text: sizes a line that mixes fonts as PowerPoint does. Each run takes 1.2 times its size, split
+ * at its font's ascent and descent; the a:br or paragraph mark that ends the line adds its own font at the
+ * size of the line's last run. The line takes the largest part above the baseline and the largest part
+ * below it, scaled down together to 1.2 times its largest size: a line that mixes Calibri and Arial is
+ * as tall as an all-Calibri line, with its baseline between the two fonts' baselines.
+ * @param {CParagraphRecalculateStateWrap} PRS
+ */
+Paragraph.prototype.private_ApplySlideLineFonts = function(PRS)
+{
+	let lineHeight = PRS.LineTextHeight;
+	if (lineHeight < 0.001)
+		return;
+
+	let endTextPr = PRS.LineBreakTextPr;
+	if (true === PRS.End)
+	{
+		// The paragraph mark counts only when the paragraph has an a:endParaRPr (even one that names no
+		// font). Runs get their theme fonts (+mn-lt) resolved when compiled; the paragraph mark does not.
+		endTextPr = null;
+		if (this.TextPr && this.TextPr.Value && !this.TextPr.Value.IsEmpty())
+		{
+			let theme = this.GetTheme();
+			endTextPr = this.GetParaEndCompiledPr();
+			if (theme && theme.themeElements)
+				endTextPr.ReplaceThemeFonts(theme.themeElements.fontScheme);
+		}
+	}
+
+	if (endTextPr && PRS.LineLastTextHeight > 0.001)
+	{
+		let fontSlot = endTextPr.CS || endTextPr.RTL ? AscWord.fontslot_CS : AscWord.fontslot_ASCII;
+		let metrics  = endTextPr.GetTextMetrics(fontSlot, this.GetTheme());
+		if (metrics.Height > 0.001)
+		{
+			let scale = PRS.LineLastTextHeight / metrics.Height;
+			PRS.LineTextAscent  = Math.max(PRS.LineTextAscent, (metrics.Ascent + metrics.LineGap) * scale);
+			PRS.LineTextAscent2 = Math.max(PRS.LineTextAscent2, metrics.Ascent * scale);
+			PRS.LineTextDescent = Math.max(PRS.LineTextDescent, metrics.Descent * scale);
+		}
+	}
+
+	let textAscent  = PRS.LineTextAscent;
+	let textDescent = PRS.LineTextDescent;
+	if (textAscent + textDescent > lineHeight + 0.001)
+	{
+		let scale = lineHeight / (textAscent + textDescent);
+		PRS.LineTextAscent   = textAscent * scale;
+		PRS.LineTextAscent2 *= scale;
+		PRS.LineTextDescent  = textDescent * scale;
+	}
+
+	// Beyond the text (a raised or lowered run) the line keeps its ascent and descent
+	if (PRS.LineAscent <= textAscent + 0.001)
+		PRS.LineAscent = PRS.LineTextAscent;
+
+	if (PRS.LineDescent <= textDescent + 0.001)
+		PRS.LineDescent = PRS.LineTextDescent;
 };
 
 Paragraph.prototype.private_RecalculateLinePosition    = function(CurLine, CurPage, PRS, ParaPr)
@@ -3488,6 +3552,11 @@ function CParagraphRecalculateStateWrap()
     this.LineAscent      = 0;
     this.LineDescent     = 0;
 
+    // Slide text: the largest run height on the line, the last run's, and the a:br's text properties
+    this.LineTextHeight     = 0;
+    this.LineLastTextHeight = 0;
+    this.LineBreakTextPr    = null;
+
     this.LineTop        = 0;
     this.LineBottom     = 0;
     this.LineTop2       = 0;
@@ -3636,6 +3705,10 @@ CParagraphRecalculateStateWrap.prototype.Reset_Line = function()
 	this.LineTextDescent = 0;
 	this.LineAscent      = 0;
 	this.LineDescent     = 0;
+	
+	this.LineTextHeight     = 0;
+	this.LineLastTextHeight = 0;
+	this.LineBreakTextPr    = null;
 	
 	this.NewPage      = false;
 	this.ForceNewPage = false;

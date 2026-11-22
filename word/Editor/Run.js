@@ -5173,6 +5173,15 @@ ParaRun.prototype.Recalculate_LineMetrics = function(PRS, ParaPr, _CurLine, _Cur
 			{
 				break;
 			}
+			case para_NewLine:
+			{
+				// PowerPoint sizes a line by the font of the a:br that ends it too (see
+				// Paragraph.private_ApplySlideLineFonts)
+				if (Para.IsSlideText() && Item.IsLineBreak())
+					PRS.LineBreakTextPr = textPr;
+
+				break;
+			}
 			case para_FieldChar:
 			{
 				if (Item.IsVisual())
@@ -5207,6 +5216,14 @@ ParaRun.prototype.Recalculate_LineMetrics = function(PRS, ParaPr, _CurLine, _Cur
 		let textDescent = metrics.Descent;
 		let textAscent2 = metrics.Ascent;
 		let textAscent  = textAscent2 + metrics.LineGap;
+		
+		if (Para.IsSlideText())
+		{
+			// The line's height and the size its a:br or paragraph mark takes (see
+			// Paragraph.private_ApplySlideLineFonts)
+			PRS.LineTextHeight     = Math.max(PRS.LineTextHeight, metrics.Height);
+			PRS.LineLastTextHeight = metrics.Height;
+		}
 		
 		if (Asc.linerule_Exact === LineRule)
 		{
