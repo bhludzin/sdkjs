@@ -56,11 +56,27 @@ var COMMENT_HEIGHT = 16;
 const LAYOUT_SCALE = 0.87;
 
 // text measurer wrapper
+
+// PowerPoint splits a font's 1.2 em line at its win ascent and descent (at its typo ascent, descent and
+// line gap when USE_TYPO_METRICS is set). The hhea line gap, which the font's line height here also takes
+// in, does not count: for other fonts the split uses the win ascent plus descent.
+function GetSlideFontLineHeight(manager)
+{
+	let lineHeight = manager.m_lLineHeight;
+	let face       = manager.m_pFont ? manager.m_pFont.m_pFaceInfo : null;
+	if (face && 0xFFFF !== face.os2_version && !(face.os2_fsSelection & 128) && "Cambria Math" !== face.family_name)
+	{
+		let winHeight = manager.m_lAscender - manager.m_lDescender;
+		if (winHeight > 0 && winHeight < lineHeight)
+			lineHeight = winHeight;
+	}
+	return lineHeight;
+}
 AscCommon.CTextMeasurer.prototype.GetAscender  = function()
 {
 	var UnitsPerEm = this.m_oManager.m_lUnits_Per_Em;
 	//var Ascender   = this.m_oManager.m_lAscender;
-	var Ascender   = ( 0 !== this.m_oManager.m_lLineHeight ) ? 1.2 * UnitsPerEm * this.m_oManager.m_lAscender / this.m_oManager.m_lLineHeight : this.m_oManager.m_lAscender;
+	var Ascender   = ( 0 !== this.m_oManager.m_lLineHeight ) ? 1.2 * UnitsPerEm * this.m_oManager.m_lAscender / GetSlideFontLineHeight(this.m_oManager) : this.m_oManager.m_lAscender;
 
 	return Ascender * this.m_oLastFont.SetUpSize / UnitsPerEm * g_dKoef_pt_to_mm;
 };
@@ -68,7 +84,7 @@ AscCommon.CTextMeasurer.prototype.GetDescender = function()
 {
 	var UnitsPerEm = this.m_oManager.m_lUnits_Per_Em;
 	//var Descender  = this.m_oManager.m_lDescender;
-	var Descender  = ( 0 !== this.m_oManager.m_lLineHeight ) ? 1.2 * UnitsPerEm * this.m_oManager.m_lDescender / this.m_oManager.m_lLineHeight : this.m_oManager.m_lDescender;
+	var Descender  = ( 0 !== this.m_oManager.m_lLineHeight ) ? 1.2 * UnitsPerEm * this.m_oManager.m_lDescender / GetSlideFontLineHeight(this.m_oManager) : this.m_oManager.m_lDescender;
 
 	return Descender * this.m_oLastFont.SetUpSize / UnitsPerEm * g_dKoef_pt_to_mm;
 };
