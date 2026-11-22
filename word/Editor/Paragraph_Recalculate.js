@@ -1566,7 +1566,7 @@ Paragraph.prototype.private_RecalculateLinePosition    = function(CurLine, CurPa
 	if (true === PRS.End
 		&& null === this.Get_DocumentNext()
 		&& this.IsSlideText()
-		&& CParaLineMetrics.IsSlideLineSpacing(ParaPr.Spacing))
+		&& CParaLineMetrics.IsSlideLineSpacing(ParaPr))
 	{
 		let metrics = this.Lines[CurLine].Metrics;
 		Bottom = Bottom2 + Math.max(0, metrics.TextDescent - metrics.Descent);
@@ -3007,7 +3007,13 @@ CParaLineMetrics.prototype =
         {
             case Asc.linerule_Auto:
             {
-                LineGap = ( TextAscent + TextDescent ) * ( ParaPr.Spacing.Line - 1 );
+                // normAutofit line spacing reduction is applied here, so it stays out of the calculated
+                // paragraph properties that the interface shows and Format Painter copies
+                var Line = ParaPr.Spacing.Line;
+                if ( undefined !== ParaPr.LnSpcReduction && null !== ParaPr.LnSpcReduction )
+                    Line -= ParaPr.LnSpcReduction;
+
+                LineGap = ( TextAscent + TextDescent ) * ( Line - 1 );
                 break;
             }
             case Asc.linerule_Exact:
@@ -3093,15 +3099,30 @@ CParaLineMetrics.prototype =
     }
 };
 /**
+ * The percentage line spacing a line is laid out at: the paragraph's spacing less the text body's
+ * normAutofit lnSpcReduction, as in Recalculate_LineGap (lnSpc 100% with a 20% reduction is 0.8).
+ * @param {AscWord.CParaPr} paraPr - compiled paragraph properties with linerule_Auto spacing
+ * @returns {number}
+ */
+CParaLineMetrics.GetAutoLineSpacing = function(paraPr)
+{
+	let line = paraPr.Spacing.Line;
+	if (undefined !== paraPr.LnSpcReduction && null !== paraPr.LnSpcReduction)
+		line -= paraPr.LnSpcReduction;
+
+	return line;
+};
+/**
  * Whether slide text with this spacing is laid out by ApplySlideLineSpacing: percentage spacing other
- * than single, or exact spacing.
- * @param {AscWord.ParaSpacing} spacing - compiled paragraph spacing
+ * than single (after lnSpcReduction), or exact spacing.
+ * @param {AscWord.CParaPr} paraPr - compiled paragraph properties
  * @returns {boolean}
  */
-CParaLineMetrics.IsSlideLineSpacing = function(spacing)
+CParaLineMetrics.IsSlideLineSpacing = function(paraPr)
 {
-	return ((Asc.linerule_Auto === spacing.LineRule && Math.abs(spacing.Line - 1) > 1e-6)
-		|| Asc.linerule_Exact === spacing.LineRule);
+	let lineRule = paraPr.Spacing.LineRule;
+	return ((Asc.linerule_Auto === lineRule && Math.abs(CParaLineMetrics.GetAutoLineSpacing(paraPr) - 1) > 1e-6)
+		|| Asc.linerule_Exact === lineRule);
 };
 /**
  * Places a line of slide text under line spacing other than single the way PowerPoint does
@@ -3125,11 +3146,11 @@ CParaLineMetrics.prototype.ApplySlideLineSpacing = function(paraPr)
 {
 	let spacing    = paraPr.Spacing;
 	let textHeight = this.TextAscent + this.TextDescent;
-	if (textHeight < 0.001 || !CParaLineMetrics.IsSlideLineSpacing(spacing))
+	if (textHeight < 0.001 || !CParaLineMetrics.IsSlideLineSpacing(paraPr))
 		return;
 
 	let isExact      = (Asc.linerule_Exact === spacing.LineRule);
-	let lineHeight   = isExact ? Math.max(25.4 / 72, spacing.Line) : textHeight * spacing.Line;
+	let lineHeight   = isExact ? Math.max(25.4 / 72, spacing.Line) : textHeight * CParaLineMetrics.GetAutoLineSpacing(paraPr);
 	let extraAscent  = isExact ? 0 : Math.max(0, this.Ascent - this.TextAscent);
 	let extraDescent = isExact ? 0 : Math.max(0, this.Descent - this.TextDescent);
 
