@@ -2345,6 +2345,10 @@
 			return;
 		}
 
+		// the line's top is y, or its centre for c_oAscLineDrawingRule.Center (slide text decorations)
+		if (AscCommon.c_oAscLineDrawingRule.Center === align)
+			y -= penW / 2;
+
 		this._s();
 		this._m(x, y);
 

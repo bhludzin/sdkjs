@@ -1718,6 +1718,18 @@
 			};
 		};
 
+		/**
+		 * Underline and strikeout metrics of this face, in font units (see GetFontDecorationMetrics).
+		 * @returns {?{UnitsPerEm: number, UnderlinePosition: number, UnderlineThickness: number,
+		 *   StrikeoutPosition: number, StrikeoutSize: number}}
+		 */
+		this.GetDecorationMetrics = function()
+		{
+			if (undefined === this.m_oDecorationMetrics)
+				this.m_oDecorationMetrics = GetFontDecorationMetrics(this.m_nStreamIndex, this.m_nStreamFaceIndex);
+			return this.m_oDecorationMetrics;
+		};
+
 		this.SetFace = function(face, fontManager)
 		{
 			this.m_pFace = face;
@@ -1921,6 +1933,118 @@
 		};
 	}
 
+	const g_fontDecorationMetrics = {};
+
+	/**
+	 * Reads the underline (post table) and strikeout (OS/2 table) metrics of a loaded font face from
+	 * its bytes, since the font engine does not report them. Values are in font units:
+	 * UnderlinePosition is the top of the underline (negative below the baseline), StrikeoutPosition
+	 * the top of the strikeout stroke above the baseline.
+	 * @param {number} streamIndex - index in AscFonts.g_fonts_streams
+	 * @param {number} faceIndex - face in a font collection
+	 * @returns {?Object} null if the bytes are not available or not an sfnt font
+	 */
+	function GetFontDecorationMetrics(streamIndex, faceIndex)
+	{
+		if (undefined === streamIndex || null === streamIndex || streamIndex < 0)
+			return null;
+
+		let key = streamIndex + "_" + (faceIndex ? faceIndex : 0);
+		if (undefined !== g_fontDecorationMetrics[key])
+			return g_fontDecorationMetrics[key];
+
+		let result = null;
+		try
+		{
+			result = ReadFontDecorationMetrics(streamIndex, faceIndex ? faceIndex : 0);
+		}
+		catch (e)
+		{
+			result = null;
+		}
+
+		g_fontDecorationMetrics[key] = result;
+		return result;
+	}
+
+	function ReadFontDecorationMetrics(streamIndex, faceIndex)
+	{
+		let stream = AscFonts.g_fonts_streams[streamIndex];
+		if (!stream)
+			return null;
+
+		let data, size;
+		if (true === stream.asc_marker)
+		{
+			data = AscFonts.GetUint8ArrayFromPointer ? AscFonts.GetUint8ArrayFromPointer(stream.data, stream.len) : null;
+			size = stream.len;
+		}
+		else
+		{
+			data = stream.data;
+			size = stream.size;
+		}
+
+		if (!data || "string" === typeof data || !(size > 12))
+			return null;
+
+		let u8  = function(pos) { return data[pos] & 0xFF; };
+		let u16 = function(pos) { return (u8(pos) << 8) | u8(pos + 1); };
+		let i16 = function(pos) { let v = u16(pos); return v >= 0x8000 ? v - 0x10000 : v; };
+		let u32 = function(pos) { return ((u8(pos) << 24) >>> 0) + (u8(pos + 1) << 16) + (u8(pos + 2) << 8) + u8(pos + 3); };
+
+		let offset = 0;
+		if (0x74746366 === u32(0)) // 'ttcf'
+		{
+			if (faceIndex >= u32(8))
+				return null;
+			offset = u32(12 + 4 * faceIndex);
+		}
+
+		let tag = u32(offset);
+		if (0x00010000 !== tag && 0x4F54544F !== tag && 0x74727565 !== tag) // 1.0, 'OTTO', 'true'
+			return null;
+
+		let tables = {};
+		let numTables = u16(offset + 4);
+		for (let i = 0; i < numTables; ++i)
+		{
+			let rec = offset + 12 + 16 * i;
+			if (rec + 16 > size)
+				return null;
+			tables[u32(rec)] = {offset : u32(rec + 8), length : u32(rec + 12)};
+		}
+
+		let head = tables[0x68656164]; // 'head'
+		let post = tables[0x706F7374]; // 'post'
+		let os2  = tables[0x4F532F32]; // 'OS/2'
+		if (!head || head.length < 20 || head.offset + 20 > size)
+			return null;
+
+		let metrics = {
+			UnitsPerEm         : u16(head.offset + 18),
+			UnderlinePosition  : 0,
+			UnderlineThickness : 0,
+			StrikeoutPosition  : 0,
+			StrikeoutSize      : 0
+		};
+
+		if (post && post.length >= 12 && post.offset + 12 <= size)
+		{
+			metrics.UnderlinePosition  = i16(post.offset + 8);
+			metrics.UnderlineThickness = i16(post.offset + 10);
+		}
+
+		if (os2 && os2.length >= 30 && os2.offset + 30 <= size)
+		{
+			metrics.StrikeoutSize     = i16(os2.offset + 26);
+			metrics.StrikeoutPosition = i16(os2.offset + 28);
+		}
+
+		return metrics.UnitsPerEm > 0 ? metrics : null;
+	}
+
 	window['AscFonts'].EGlyphState = EGlyphState;
 	window['AscFonts'].CFontFile = CFontFile;
+	window['AscFonts'].GetFontDecorationMetrics = GetFontDecorationMetrics;
 })(window);
