@@ -205,6 +205,11 @@
 			}
 			else
 			{
+				// PowerPoint does not kern a letter into a following hyphen-minus (T-, r-): in slides the
+				// hyphen starts a shaping segment of its own, as it already ends one (IsSpaceAfter).
+				if (this.SlideText && 0x002D === oItem.Value && oItem.IsSpaceAfter())
+					this.FlushWord();
+
 				if (this.KernSpace)
 					this.private_KernSpaceBefore(oItem);
 
@@ -464,16 +469,23 @@
 	};
 	/**
 	 * Font size (pt) at which PowerPoint's layout advances are rounded, or 0 when the
-	 * advances stay linear: outside the presentation editor, and for superscript,
-	 * subscript and small caps, whose size is scaled when the item is measured.
+	 * advances stay linear: outside the presentation editor, and for small caps, whose
+	 * size is scaled when the item is measured. Superscript and subscript text is rounded
+	 * at its own size, 2/3 of the run size (the size its items store).
 	 */
 	CParagraphTextShaper.prototype.private_GetLayoutFontSize = function(fontSize)
 	{
 		if (!(Asc.editor && Asc.editor.isPresentationEditor) || !this.TextPr || null !== this.MaskSymbol)
 			return 0;
 
-		if (this.TextPr.VertAlign !== AscCommon.vertalign_Baseline || (this.TextPr.SmallCaps && !this.TextPr.Caps))
+		if (this.TextPr.SmallCaps && !this.TextPr.Caps)
 			return 0;
+
+		if (this.TextPr.VertAlign !== AscCommon.vertalign_Baseline)
+		{
+			fontSize = AscWord.GetSlideScriptFontSize(fontSize, this.TextPr.GetScriptSizeCoef());
+			return fontSize > 0 ? fontSize : 0;
+		}
 
 		// The size the run items store (1/64 pt), so that an item's width is a whole number of 1/8 pt.
 		fontSize = ((fontSize * 64) | 0) / 64;

@@ -716,12 +716,12 @@
 	ParagraphContentDrawState.prototype.calculateY = function(textPr)
 	{
 		let y = this.Y;
-		
-		if (AscCommon.vertalign_SubScript === textPr.VertAlign)
-			y -= AscCommon.vaKSub * textPr.FontSize * g_dKoef_pt_to_mm;
-		else if (AscCommon.vertalign_SuperScript === textPr.VertAlign)
-			y -= AscCommon.vaKSuper * textPr.FontSize * g_dKoef_pt_to_mm;
-		
+
+		// Superscript and subscript shift (Word's fixed factors, or PowerPoint's a:rPr/@baseline in slides)
+		let scriptShift = textPr.GetScriptShift();
+		if (scriptShift)
+			y -= scriptShift * textPr.FontSize * g_dKoef_pt_to_mm;
+
 		return y;
 	};
 	ParagraphContentDrawState.prototype.isSlideEditor = function()

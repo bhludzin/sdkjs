@@ -4085,6 +4085,11 @@
 			}
 			oDocContent.SetUseXLimit(bUseXLimit);
 
+			// Slide text in a box that does not wrap: PowerPoint counts trailing spaces when it centres
+			// or right-aligns such lines (Paragraph.private_RecalculateLineAlign).
+			oDocContent.SlideNoWrap = (oBodyPr.wrap === AscFormat.nTWTNone && !this.bWordShape
+				&& !!(Asc.editor && Asc.editor.isPresentationEditor));
+
 			// PowerPoint lays slide text out in whole 1/576-inch units (glyph advances are rounded
 			// to them, see the paragraph text shaper) and wraps a line that would be wider than the
 			// box width minus insets rounded down to whole units. Lay it out on that width instead

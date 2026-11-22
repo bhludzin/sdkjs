@@ -455,7 +455,7 @@
 		
 		let textPr = run.getCompiledPr();
 		
-		this.updateStrikeoutUnderlinePos(run, textPr.FontSize, textPr.VertAlign);
+		this.updateStrikeoutUnderlinePos(run, textPr.FontSize, textPr.VertAlign, textPr);
 		this.updateColor(textPr);
 		this.updateReviewState(run);
 		
@@ -541,23 +541,29 @@
 			);
 		}
 	};
-	ParagraphLineDrawState.prototype.updateStrikeoutUnderlinePos = function(run, fontSize, vertAlign)
+	ParagraphLineDrawState.prototype.updateStrikeoutUnderlinePos = function(run, fontSize, vertAlign, textPr)
 	{
 		let fontSizeMM = fontSize * g_dKoef_pt_to_mm;
 		if (run.IsMathRun())
 			fontSizeMM *= MatGetKoeffArgSize(fontSize, run.Parent.Compiled_ArgSz.value);
-		
+
+		// Script size and shift: Word's fixed factors, or PowerPoint's in slides (see CTextPr.GetScriptShift)
+		let scriptCoef  = textPr ? textPr.GetScriptSizeCoef() : AscCommon.vaKSize;
+		let scriptShift = textPr ? textPr.GetScriptShift() : 0;
+		if (!textPr && AscCommon.vertalign_SubScript === vertAlign)
+			scriptShift = AscCommon.vaKSub;
+		else if (!textPr && AscCommon.vertalign_SuperScript === vertAlign)
+			scriptShift = AscCommon.vaKSuper;
+
 		let strikeoutShift = 0.27;
-		if (AscCommon.vertalign_SubScript === vertAlign)
-			strikeoutShift = AscCommon.vaKSize * 0.27 + AscCommon.vaKSub;
-		else if (AscCommon.vertalign_SuperScript === vertAlign)
-			strikeoutShift = AscCommon.vaKSize * 0.27 + AscCommon.vaKSuper;
-		
+		if (AscCommon.vertalign_SubScript === vertAlign || AscCommon.vertalign_SuperScript === vertAlign)
+			strikeoutShift = scriptCoef * 0.27 + scriptShift;
+
 		let strikeoutY = this.Baseline - this.yOffset - fontSizeMM * strikeoutShift;
 		let underlineY = this.Baseline - this.yOffset + this.UnderlineOffset;
-		
+
 		if (AscCommon.vertalign_SubScript === vertAlign)
-			underlineY -= AscCommon.vaKSub * fontSizeMM;
+			underlineY -= scriptShift * fontSizeMM;
 		
 		let lineW = (fontSize / 18) * g_dKoef_pt_to_mm;
 		

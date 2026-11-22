@@ -101,8 +101,11 @@
 		// Разрешенные размеры шрифта только либо целое, либо целое/2. Даже после применения fontCoef, поэтому
 		// мы должны подкрутить коэффициент так, чтобы после домножения на него, у на получался разрешенный размер.
 		// Fractional sizes without a coefficient (PowerPoint's sz="1275") are kept as they are, the
-		// way CRunText.SetMetrics keeps them, so a space is as wide as the text around it.
-		if (1 !== fontCoef)
+		// way CRunText.SetMetrics keeps them, so a space is as wide as the text around it. So are
+		// superscript and subscript sizes in slides (2/3 of the run size, see CRunText.SetMetrics).
+		if (this.Flags & FLAGS_FONTKOEF_SCRIPT && AscWord.IsSlideScriptLayout())
+			fontSize = AscWord.GetSlideScriptFontSize(fontSize, fontCoef);
+		else if (1 !== fontCoef)
 			fontSize = (((fontSize * fontCoef * 2 + 0.5) | 0) / 2);
 		this.Flags = (this.Flags & 0xFFFF) | (((fontSize * 64) & 0xFFFF) << 16);
 	};
@@ -175,10 +178,12 @@
 	};
 	CRunSpace.prototype.GetFontCoef = function()
 	{
+		// Superscript and subscript spaces in slides are 2/3 of the run size, as in PowerPoint.
+		let scriptCoef = AscWord.IsSlideScriptLayout() ? 2 / 3 : AscCommon.vaKSize;
 		if (this.Flags & FLAGS_FONTKOEF_SCRIPT && this.Flags & FLAGS_FONTKOEF_SMALLCAPS)
-			return smallcaps_and_script_koef;
+			return scriptCoef * smallcaps_Koef;
 		else if (this.Flags & FLAGS_FONTKOEF_SCRIPT)
-			return AscCommon.vaKSize;
+			return scriptCoef;
 		else if (this.Flags & FLAGS_FONTKOEF_SMALLCAPS)
 			return smallcaps_Koef;
 		else

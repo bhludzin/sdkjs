@@ -1970,6 +1970,11 @@ Paragraph.prototype.private_RecalculateLineAlign       = function(CurLine, CurPa
 		let rtlShift = PRSC.SpaceLen;
 		let bRtlAlign = ParaPr.Bidi;
 		let jc = ParaPr.Jc;
+
+		// In a slide box that does not wrap (wrap="none"), PowerPoint counts a line's trailing spaces when
+		// it centres or right-aligns it: a centred label ending in a space sits half a space to the left.
+		// In boxes that wrap, trailing spaces hang as in Word.
+		let trailingW = (!bRtlAlign && this.Parent && true === this.Parent.SlideNoWrap && this.IsSlideText()) ? PRSC.SpaceLen : 0;
 	
 		if (!this.bFromDocument && !PRS.isDocumentEditor() && bRtlAlign)
 		{
@@ -2029,11 +2034,11 @@ Paragraph.prototype.private_RecalculateLineAlign       = function(CurLine, CurPa
 						}
 						else
 						{
-							X = Range.X + RangeWidth - Range.W;
+							X = Range.X + RangeWidth - Range.W - trailingW;
 							if (this.IsUseXLimit())
 								X = Math.max(X, Range.X);
 						}
-						
+
 						break;
 					}
 					case AscCommon.align_Center:
@@ -2046,7 +2051,7 @@ Paragraph.prototype.private_RecalculateLineAlign       = function(CurLine, CurPa
 						}
 						else
 						{
-							X = Range.X + (RangeWidth - Range.W) / 2;
+							X = Range.X + (RangeWidth - Range.W - trailingW) / 2;
 							if (this.IsUseXLimit())
 								X = Math.max(X, Range.X);
 						}

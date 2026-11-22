@@ -12998,6 +12998,21 @@ CLang.prototype.Is_Equal = function(Lang)
 const TEXTPR_BINARY_EXTENSION       = 0x80;
 const TEXTPR_BINARY_LIGATURES_UNSET = 0x7F;
 
+// Superscript and subscript text in the presentation editor is 2/3 of the run size, as in PowerPoint.
+const SLIDE_SCRIPT_SIZE_COEF = 2 / 3;
+function IsSlideScriptLayout()
+{
+	return !!(Asc.editor && Asc.editor.isPresentationEditor);
+}
+/**
+ * Font size (pt) of superscript or subscript text in the presentation editor, to the 1/64 pt the run
+ * items store.
+ */
+function GetSlideScriptFontSize(fontSize, coef)
+{
+	return Math.round(fontSize * coef * 64) / 64;
+}
+
 function CTextPr()
 {
     this.Bold       = undefined; // Жирный текст
@@ -13030,6 +13045,7 @@ function CTextPr()
     this.Vanish     = undefined;
 	this.Ligatures  = undefined;
 	this.Kern       = undefined; // Pair kerning applies from this font size (pt) up; 0 = no kerning
+	this.Baseline   = undefined; // DrawingML a:rPr/@baseline as a fraction of the font size (0.3 = raised 30%)
 
     this.TextOutline    = undefined;
     this.TextFill       = undefined;
@@ -13073,6 +13089,7 @@ CTextPr.prototype.Clear = function()
 	this.Vanish         = undefined;
 	this.Ligatures      = undefined;
 	this.Kern           = undefined;
+	this.Baseline       = undefined;
 	this.TextOutline    = undefined;
 	this.TextFill       = undefined;
 	this.HighlightColor = undefined;
@@ -13139,6 +13156,7 @@ CTextPr.prototype.Copy = function(bCopyPrChange, oPr)
 	TextPr.Vanish    = this.Vanish;
 	TextPr.Ligatures = this.Ligatures;
 	TextPr.Kern      = this.Kern;
+	TextPr.Baseline  = this.Baseline;
 
 	if (true === bCopyPrChange && undefined !== this.PrChange)
 	{
@@ -13179,6 +13197,7 @@ CTextPr.prototype.createDuplicateForSmartArt = function(oPr)
 	TextPr.Vanish    = this.Vanish;
 	TextPr.Ligatures = this.Ligatures;
 	TextPr.Kern      = this.Kern;
+	TextPr.Baseline  = this.Baseline;
 
 	if (oPr.custT) {
 		TextPr.FontSize = this.FontSize;
@@ -13334,6 +13353,9 @@ CTextPr.prototype.Merge = function(TextPr)
 
 	if (undefined !== TextPr.Kern && null !== TextPr.Kern)
 		this.Kern = TextPr.Kern;
+
+	if (undefined !== TextPr.Baseline && null !== TextPr.Baseline)
+		this.Baseline = TextPr.Baseline;
 
 	if (TextPr.TextOutline)
 		this.TextOutline = TextPr.TextOutline.createDuplicate();
@@ -13519,6 +13541,11 @@ CTextPr.prototype.Apply = function(textPr)
 	else if (undefined !== textPr.Kern)
 		this.Kern = textPr.Kern;
 	
+	if (null === textPr.Baseline)
+		this.Baseline = undefined;
+	else if (undefined !== textPr.Baseline)
+		this.Baseline = textPr.Baseline;
+	
 	if (null === textPr.FontScale)
 		this.FontScale = undefined;
 	else if (undefined !== textPr.FontScale)
@@ -13637,6 +13664,7 @@ CTextPr.prototype.Set_FromObject = function(TextPr, isUndefinedToNull)
 	this.Vanish         = CheckUndefinedToNull(isUndefinedToNull, TextPr.Vanish);
 	this.Ligatures      = CheckUndefinedToNull(isUndefinedToNull, TextPr.Ligatures);
 	this.Kern           = CheckUndefinedToNull(isUndefinedToNull, TextPr.Kern);
+	this.Baseline       = CheckUndefinedToNull(isUndefinedToNull, TextPr.Baseline);
 	this.Unifill        = CheckUndefinedToNull(isUndefinedToNull, TextPr.Unifill);
 	this.FontRef        = CheckUndefinedToNull(isUndefinedToNull, TextPr.FontRef);
 	this.TextFill       = CheckUndefinedToNull(isUndefinedToNull, TextPr.TextFill);
@@ -13756,6 +13784,9 @@ CTextPr.prototype.Compare = function(TextPr)
 
 	if (undefined !== this.Kern && !IsEqualNullableFloatNumbers(this.Kern, TextPr.Kern))
 		this.Kern = undefined;
+
+	if (undefined !== this.Baseline && !IsEqualNullableFloatNumbers(this.Baseline, TextPr.Baseline))
+		this.Baseline = undefined;
 
 	if (undefined !== this.FontScale && this.FontScale !== TextPr.FontScale)
 		this.FontScale = undefined;
@@ -14141,7 +14172,7 @@ CTextPr.prototype.Write_ToBinary = function(Writer)
 	// All 32 flag bits are in use, so newer properties go in an extension block written right
 	// after the Ligatures byte. The byte's high bit marks that the block follows (ligature types
 	// use only the low four bits), so data written before the extension still reads unchanged.
-	let isExtension = (undefined != this.Kern);
+	let isExtension = (undefined != this.Kern || undefined != this.Baseline);
 	if (undefined != this.Ligatures || isExtension)
 	{
 		let nLigatures = (undefined != this.Ligatures ? this.Ligatures : TEXTPR_BINARY_LIGATURES_UNSET);
@@ -14159,6 +14190,12 @@ CTextPr.prototype.Write_ToBinary = function(Writer)
 		{
 			Writer.WriteDouble(this.Kern);
 			nExtFlags |= 1;
+		}
+
+		if (undefined != this.Baseline)
+		{
+			Writer.WriteDouble(this.Baseline);
+			nExtFlags |= 2;
 		}
 
 		let nExtEndPos = Writer.GetCurPosition();
@@ -14347,6 +14384,9 @@ CTextPr.prototype.Read_FromBinary = function(Reader)
 
 			if (nExtFlags & 1)
 				this.Kern = Reader.GetDouble();
+
+			if (nExtFlags & 2)
+				this.Baseline = Reader.GetDouble();
 		}
 	}
 };
@@ -14616,6 +14656,9 @@ CTextPr.prototype.Is_Equal = function(TextPr)
 	if (!IsEqualNullableFloatNumbers(this.Kern, TextPr.Kern))
 		return false;
 
+	if (!IsEqualNullableFloatNumbers(this.Baseline, TextPr.Baseline))
+		return false;
+
 	if (!IsEqualStyleObjects(this.Shd, TextPr.Shd))
 		return false;
 	if (undefined != TextPr.AscLine)
@@ -14667,6 +14710,7 @@ CTextPr.prototype.Is_Empty = function()
 		|| undefined !== this.Vanish
 		|| undefined !== this.Ligatures
 		|| undefined !== this.Kern
+		|| undefined !== this.Baseline
 		|| undefined !== this.TextOutline
 		|| undefined !== this.TextFill
 		|| undefined !== this.HighlightColor)
@@ -14782,6 +14826,9 @@ CTextPr.prototype.GetDiff = function(oTextPr)
 
 	if (!IsEqualNullableFloatNumbers(this.Kern, oTextPr.Kern))
 		oResultTextPr.Kern = this.Kern;
+
+	if (!IsEqualNullableFloatNumbers(this.Baseline, oTextPr.Baseline))
+		oResultTextPr.Baseline = this.Baseline;
 
 	if (this.Shd && !this.Shd.IsEqual(oTextPr.Shd))
 		oResultTextPr.Shd = this.Shd.Copy();
@@ -15047,6 +15094,35 @@ CTextPr.prototype.GetKern = function()
 CTextPr.prototype.IsKerned = function()
 {
 	return (this.Kern > 0 && this.FontSize > 0 && this.FontSize >= this.Kern - 0.001);
+};
+/**
+ * Size factor of superscript and subscript text: PowerPoint draws it at 2/3 of the run size, not
+ * rounded (18 pt -> 12 pt, 13.5 pt -> 9 pt, 12.75 pt -> 8.5 pt); Word at 0.65 (then rounded to half
+ * points by the callers). 1 for text on the baseline.
+ * @returns {number}
+ */
+CTextPr.prototype.GetScriptSizeCoef = function()
+{
+	if (AscCommon.vertalign_SuperScript !== this.VertAlign && AscCommon.vertalign_SubScript !== this.VertAlign)
+		return 1;
+
+	return IsSlideScriptLayout() ? SLIDE_SCRIPT_SIZE_COEF : AscCommon.vaKSize;
+};
+/**
+ * How far superscript or subscript text is moved, as a fraction of the run's font size: positive
+ * raises, negative lowers. PowerPoint moves it by a:rPr/@baseline (30000 = 30%), which defaults to
+ * +30% for superscript and -25% for subscript; Word uses fixed factors.
+ * @returns {number}
+ */
+CTextPr.prototype.GetScriptShift = function()
+{
+	let isSlide = IsSlideScriptLayout();
+	if (AscCommon.vertalign_SuperScript === this.VertAlign)
+		return isSlide ? (this.Baseline > 0 ? this.Baseline : 0.3) : AscCommon.vaKSuper;
+	else if (AscCommon.vertalign_SubScript === this.VertAlign)
+		return isSlide ? (this.Baseline < 0 ? this.Baseline : -0.25) : AscCommon.vaKSub;
+
+	return 0;
 };
 CTextPr.prototype.WriteToBinary = function(oWriter)
 {
@@ -17879,6 +17955,8 @@ window["AscCommonWord"].wrap_Through = wrap_Through;
 window["AscCommonWord"].wrap_Tight = wrap_Tight;
 
 window["AscWord"].CTextPr  = CTextPr;
+window["AscWord"].IsSlideScriptLayout    = IsSlideScriptLayout;
+window["AscWord"].GetSlideScriptFontSize = GetSlideScriptFontSize;
 window["AscWord"].CParaPr  = CParaPr;
 window["AscWord"].CStyle   = CStyle;
 window["AscWord"].CNumPr   = CNumPr;
