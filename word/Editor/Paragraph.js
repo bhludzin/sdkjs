@@ -10833,7 +10833,12 @@ Paragraph.prototype.Get_CompiledPr = function()
 				&& Prev_NumPr.NumId === NumPr.NumId))
 				Prev_After = 0;
 
-			Pr.ParaPr.Spacing.Before = Math.max(Prev_After, Cur_Before) - Prev_After;
+			// PowerPoint adds the previous paragraph's space after and this paragraph's space before;
+			// Word uses the larger of the two.
+			if (this.IsSlideText())
+				Pr.ParaPr.Spacing.Before = Cur_Before;
+			else
+				Pr.ParaPr.Spacing.Before = Math.max(Prev_After, Cur_Before) - Prev_After;
 		}
 	}
 	else if (null === PrevEl)
@@ -10993,7 +10998,40 @@ Paragraph.prototype.Get_CompiledPr = function()
 		}
 	}
 
+	if (this.IsSlideText())
+		this.private_RoundSlideSpacing(Pr.ParaPr.Spacing);
+
 	return Pr;
+};
+/**
+ * Text in a presentation (slides, notes, tables on slides), which is laid out like PowerPoint does.
+ * @returns {boolean}
+ */
+Paragraph.prototype.IsSlideText = function()
+{
+	return (true !== this.bFromDocument && !!(Asc.editor && Asc.editor.isPresentationEditor));
+};
+/**
+ * PowerPoint lays point-based spacing out in whole points, halves up (spcBef/spcAft 4.5 pt -> 5 pt,
+ * lnSpc spcPts 20.5 pt -> 21 pt). Percentage spacing (BeforePct/AfterPct, which the shape turns into
+ * a length after the first layout pass) is used as it is.
+ * @param {AscWord.ParaSpacing} spacing - compiled spacing, changed in place
+ */
+Paragraph.prototype.private_RoundSlideSpacing = function(spacing)
+{
+	function toWholePoints(mm)
+	{
+		return Math.floor(mm / g_dKoef_pt_to_mm + 0.5 + 1e-6) * g_dKoef_pt_to_mm;
+	}
+
+	if (undefined === spacing.BeforePct && spacing.Before > 0)
+		spacing.Before = toWholePoints(spacing.Before);
+
+	if (undefined === spacing.AfterPct && spacing.After > 0)
+		spacing.After = toWholePoints(spacing.After);
+
+	if (Asc.linerule_Exact === spacing.LineRule && spacing.Line > 0)
+		spacing.Line = toWholePoints(spacing.Line);
 };
 Paragraph.prototype.getCompiledPr = function()
 {

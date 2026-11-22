@@ -1271,9 +1271,15 @@ Paragraph.prototype.private_RecalculateLineMetrics     = function(CurLine, CurPa
         }
     }
 
+	// In slide text spaces have line metrics (see ParaRun.Recalculate_LineMetrics). A line that holds only
+	// spaces keeps them: PowerPoint does not size it by the paragraph mark.
+	let hasSpaceMetrics = (true !== PRS.TextOnLine
+		&& (PRS.LineTextAscent > 0.001 || PRS.LineTextDescent > 0.001)
+		&& this.IsSlideText());
+
     // Строка пустая, у нее надо выставить ненулевую высоту. Делаем как Word, выставляем высоту по размеру
     // текста, на котором закончилась данная строка.
-    if ( true === PRS.EmptyLine || (PRS.LineAscent < 0.001 && PRS.LineDescent < 0.001) || (true === PRS.End && true !== PRS.TextOnLine))
+    if (!hasSpaceMetrics && (true === PRS.EmptyLine || (PRS.LineAscent < 0.001 && PRS.LineDescent < 0.001) || (true === PRS.End && true !== PRS.TextOnLine)))
 	{
 		let useParaEnd = true;
 		if (true !== PRS.End)
