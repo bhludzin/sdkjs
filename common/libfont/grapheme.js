@@ -117,32 +117,109 @@
 		if (nCount <= 0)
 			return;
 
-		let nPos = 8;
 		let nCodePointPos = 0;
 		let nCodePointsCount = codePoints ? codePoints.getCount() : 0;
 
-		if (nCodePointPos >= nCodePointsCount)
+		if (nCount > 1 && FillCodePointsByCmap(codePoints, nCount, nCodePointsCount))
+			return;
+
+		// A right-to-left cluster comes from the shaper in visual order, its marks before the base
+		// glyph, so the code points go to its glyphs from the last one back: the base glyph gets the
+		// base letter. (PDF output picks glyphs by these code points, so a mark glyph holding the
+		// letter drew a wrong letter elsewhere.)
+		let isRtl = !!(codePoints && codePoints.isRtl);
+		for (let nGlyph = 0; nGlyph < nCount; ++nGlyph)
 		{
-			GRAPHEME_BUFFER[nPos] = [0x20];
-		}
-		else
-		{
-			GRAPHEME_BUFFER[nPos] = [];
-			let nStoreCount = Math.max(1, nCodePointsCount - nCount + 1);
-			for (;nCodePointPos < nStoreCount; ++nCodePointPos)
+			let nPos = 8 + 6 * (isRtl ? nCount - 1 - nGlyph : nGlyph);
+			if (nCodePointPos >= nCodePointsCount)
 			{
-				GRAPHEME_BUFFER[nPos].push(codePoints.get(nCodePointPos));
+				GRAPHEME_BUFFER[nPos] = [0x20];
+			}
+			else if (0 === nGlyph)
+			{
+				GRAPHEME_BUFFER[nPos] = [];
+				let nStoreCount = Math.max(1, nCodePointsCount - nCount + 1);
+				for (;nCodePointPos < nStoreCount; ++nCodePointPos)
+				{
+					GRAPHEME_BUFFER[nPos].push(codePoints.get(nCodePointPos));
+				}
+			}
+			else
+			{
+				GRAPHEME_BUFFER[nPos] = [codePoints.get(nCodePointPos++)];
+			}
+		}
+	}
+	/**
+	 * Gives each glyph of a multi-glyph cluster the code point whose cmap glyph it is (a mark glyph
+	 * gets its mark), and the code points no glyph stands for alone (a base letter composed with a
+	 * mark, say bet + dagesh) to the remaining glyphs in logical order, the first of them taking
+	 * any extra. HarfBuzz reorders marks (canonical order, visual order for right-to-left text) and
+	 * composes them, so glyphs and code points do not line up by position. PDF output picks glyphs
+	 * by these code points.
+	 * @returns {boolean} false when the cmap glyphs of the code points are not known
+	 */
+	function FillCodePointsByCmap(codePoints, nCount, nCodePointsCount)
+	{
+		if (!codePoints || !codePoints.hasGids || !codePoints.hasGids() || nCodePointsCount <= 0)
+			return false;
+
+		let isRtl    = !!codePoints.isRtl;
+		let assigned = new Array(nCount);
+		let used     = new Array(nCodePointsCount);
+		for (let nGlyph = 0; nGlyph < nCount; ++nGlyph)
+		{
+			let nGID = GRAPHEME_BUFFER[3 + 6 * nGlyph];
+			for (let nCodePoint = 0; nCodePoint < nCodePointsCount; ++nCodePoint)
+			{
+				if (!used[nCodePoint] && codePoints.getGid(nCodePoint) === nGID)
+				{
+					assigned[nGlyph]  = [codePoints.get(nCodePoint)];
+					used[nCodePoint] = true;
+					break;
+				}
 			}
 		}
 
-		nPos += 6;
-		for (let nIndex = 1; nIndex < nCount; ++nIndex, nPos += 6, nCodePointPos++)
+		let rest = [];
+		for (let nCodePoint = 0; nCodePoint < nCodePointsCount; ++nCodePoint)
 		{
-			if (nCodePointPos >= nCodePointsCount)
-				GRAPHEME_BUFFER[nPos] = [0x20];
-			else
-				GRAPHEME_BUFFER[nPos] = [codePoints.get(nCodePointPos)];
+			if (!used[nCodePoint])
+				rest.push(codePoints.get(nCodePoint));
 		}
+
+		// Glyphs without a code point of their own, in logical order
+		let free = [];
+		for (let nIndex = 0; nIndex < nCount; ++nIndex)
+		{
+			let nGlyph = isRtl ? nCount - 1 - nIndex : nIndex;
+			if (!assigned[nGlyph])
+				free.push(nGlyph);
+		}
+
+		if (free.length > 0)
+		{
+			let nExtra = Math.max(0, rest.length - free.length);
+			let nRest  = 0;
+			for (let nIndex = 0; nIndex < free.length; ++nIndex)
+			{
+				let nTake = 0 === nIndex ? 1 + nExtra : 1;
+				let arr   = rest.slice(nRest, nRest + nTake);
+				nRest += nTake;
+				assigned[free[nIndex]] = arr.length ? arr : [0x20];
+			}
+		}
+		else if (rest.length > 0)
+		{
+			// Every glyph is a cmap glyph and code points remain: keep them with the first glyph
+			let nFirst = isRtl ? nCount - 1 : 0;
+			assigned[nFirst] = rest.concat(assigned[nFirst]);
+		}
+
+		for (let nGlyph = 0; nGlyph < nCount; ++nGlyph)
+			GRAPHEME_BUFFER[8 + 6 * nGlyph] = assigned[nGlyph];
+
+		return true;
 	}
 	function GetGraphemeIndex(codePoints)
 	{

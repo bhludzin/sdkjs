@@ -9986,6 +9986,7 @@
 			this.latin = null;
 			this.ea = null;
 			this.cs = null;
+			this.scriptFonts = {}; // a:font script="Hebr" typeface="Arial" -> {"Hebr": "Arial"}
 			if (fontScheme) {
 				this.setFontScheme(fontScheme);
 			}
@@ -10011,6 +10012,19 @@
 			this.cs = pr;
 			if (this.fontScheme)
 				this.fontScheme.checkFromFontCollection(pr, this, FONT_REGION_CS);
+		};
+		FontCollection.prototype.setScriptFont = function (script, typeface) {
+			this.scriptFonts[script] = typeface;
+		};
+		FontCollection.prototype.getScriptFont = function (script) {
+			return script && this.scriptFonts[script] ? this.scriptFonts[script] : null;
+		};
+		FontCollection.prototype.hasScriptFonts = function () {
+			for (var script in this.scriptFonts) {
+				if (this.scriptFonts.hasOwnProperty(script))
+					return true;
+			}
+			return false;
 		};
 		FontCollection.prototype.Write_ToBinary = function (w) {
 			writeString(w, this.latin);
@@ -10071,6 +10085,15 @@
 			oCopy.minorFont.setLatin(this.minorFont.latin);
 			oCopy.minorFont.setEA(this.minorFont.ea);
 			oCopy.minorFont.setCS(this.minorFont.cs);
+
+			for (var script in this.majorFont.scriptFonts) {
+				if (this.majorFont.scriptFonts.hasOwnProperty(script))
+					oCopy.majorFont.setScriptFont(script, this.majorFont.scriptFonts[script]);
+			}
+			for (var script in this.minorFont.scriptFonts) {
+				if (this.minorFont.scriptFonts.hasOwnProperty(script))
+					oCopy.minorFont.setScriptFont(script, this.minorFont.scriptFonts[script]);
+			}
 			return oCopy;
 		};
 		FontScheme.prototype.Refresh_RecalcData = function () {
@@ -10137,6 +10160,67 @@
 				}
 			}
 			return font;
+		};
+		/**
+		 * The complex-script (cs) font of slide text in a run of the given language, for a font name
+		 * that may be a theme font (+mn-cs, +mj-cs, minorBidi, majorBidi).
+		 *
+		 * PowerPoint: when the theme's cs typeface is empty, the cs font is the theme's a:font script
+		 * font for the script of the run's language (he-IL -> "Hebr", ar-SA -> "Arab"), whatever script
+		 * the text itself is in; for other languages (en-US) Hebrew is set in Arial. Measured on
+		 * PowerPoint's PDF export.
+		 *
+		 * x2t writes an empty theme typeface as "Arial" (CFontDstManager::GetTypefacePickByName), so a
+		 * theme cs of "Arial" next to a:font script fonts is taken for an empty one. Office themes
+		 * leave cs empty; none of the reviewed decks names Arial there.
+		 * @param {string} font
+		 * @param {number} [lcid]
+		 * @returns {string}
+		 */
+		FontScheme.prototype.checkSlideCSFont = function (font, lcid) {
+			var collection = null;
+			if ("+mn-cs" === font || "minorBidi" === font) {
+				collection = this.minorFont;
+			} else if ("+mj-cs" === font || "majorBidi" === font) {
+				collection = this.majorFont;
+			}
+			if (!collection || !collection.hasScriptFonts()) {
+				return this.checkFont(font);
+			}
+
+			var themeFont = this.fontMap[font];
+			if (themeFont && "Arial" !== themeFont) {
+				return themeFont;
+			}
+
+			var script = getComplexScriptForLanguage(lcid);
+			var scriptFont = script ? collection.getScriptFont(script) : null;
+			if (scriptFont) {
+				return scriptFont;
+			}
+			return themeFont ? themeFont : this.checkFont(font);
+		};
+		/**
+		 * The OOXML theme script (a:font script, e.g. "Hebr") of a complex-script language, or
+		 * null for other languages.
+		 */
+		function getComplexScriptForLanguage(lcid) {
+			var langName = AscFormat.isRealNumber(lcid) && Asc.g_oLcidIdToNameMap ? Asc.g_oLcidIdToNameMap[lcid] : null;
+			if (!langName) {
+				return null;
+			}
+			return COMPLEX_SCRIPT_BY_LANGUAGE[langName.split("-")[0].toLowerCase()] || null;
+		}
+		// Language subtag -> OOXML theme script (a:font script) for complex-script languages
+		// (the scripts AscWord.IsComplexScriptCodePoint covers).
+		var COMPLEX_SCRIPT_BY_LANGUAGE = {
+			"he": "Hebr", "yi": "Hebr",
+			"ar": "Arab", "fa": "Arab", "ur": "Arab", "ps": "Arab", "sd": "Arab", "ug": "Uigh",
+			"syr": "Syrc", "dv": "Thaa",
+			"th": "Thai", "lo": "Laoo", "km": "Khmr", "bo": "Tibt",
+			"hi": "Deva", "mr": "Deva", "ne": "Deva", "sa": "Deva", "kok": "Deva",
+			"bn": "Beng", "as": "Beng", "gu": "Gujr", "pa": "Guru", "or": "Orya",
+			"ta": "Taml", "te": "Telu", "kn": "Knda", "ml": "Mlym", "si": "Sinh"
 		};
 		FontScheme.prototype.getObjectType = function () {
 			return AscDFH.historyitem_type_FontScheme;
@@ -20562,6 +20646,7 @@
 		window['AscFormat'].ExtraClrScheme = ExtraClrScheme;
 		window['AscFormat'].FontCollection = FontCollection;
 		window['AscFormat'].FontScheme = FontScheme;
+		window['AscFormat'].getComplexScriptForLanguage = window['AscFormat']['getComplexScriptForLanguage'] = getComplexScriptForLanguage;
 		window['AscFormat'].FmtScheme = FmtScheme;
 		window['AscFormat'].ThemeElements = ThemeElements;
 		window['AscFormat'].CTheme = CTheme;
