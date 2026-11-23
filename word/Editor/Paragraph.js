@@ -3097,8 +3097,8 @@ Paragraph.prototype.drawRunContentElements = function(CurPage, pGraphics, drawSt
 	if (slideBaselines && slideBaselines.gridX && !this.isRtlDirection())
 	{
 		let gridX = slideBaselines.gridX;
-		slideRuns      = {transform : slideBaselines.transform, stretch : gridX.stretch, offset : gridX.offset, grid : Paragraph.SLIDE_TEXT_POSITION_GRID, extras : false};
-		slideRunsExtra = {transform : slideBaselines.transform, stretch : gridX.stretch, offset : gridX.offset, grid : Paragraph.SLIDE_TEXT_POSITION_GRID, extras : true};
+		slideRuns      = {transform : slideBaselines.transform, stretch : gridX.stretch, offset : gridX.offset, grid : Paragraph.SLIDE_TEXT_POSITION_GRID, extras : false, stretchY : slideBaselines.stretch};
+		slideRunsExtra = {transform : slideBaselines.transform, stretch : gridX.stretch, offset : gridX.offset, grid : Paragraph.SLIDE_TEXT_POSITION_GRID, extras : true, stretchY : slideBaselines.stretch};
 	}
 	let slideJc = Pr.ParaPr.Jc;
 	let isSlideLeftLine = (AscCommon.align_Left === slideJc || AscCommon.align_Justify === slideJc || AscCommon.align_Distributed === slideJc);
@@ -3114,11 +3114,12 @@ Paragraph.prototype.drawRunContentElements = function(CurPage, pGraphics, drawSt
 		var X = this.Pages[CurPage].X;
 
 		// Slide text: the glyphs go where PowerPoint draws them (GetSlideLinePos); the layout is unchanged.
-		let slideShiftX = 0;
+		let slideShiftX = 0, slideLineY = null;
 		if (slideBaselines)
 		{
 			let slidePos = this.GetSlideLinePos(X, Y, slideBaselines);
 			slideShiftX  = slidePos.x - X;
+			slideLineY   = slidePos.slideY;
 			Y            = slidePos.y;
 		}
 
@@ -3131,7 +3132,7 @@ Paragraph.prototype.drawRunContentElements = function(CurPage, pGraphics, drawSt
 		}
 		
 		PDSE.resetLine(CurLine, Y, Y - Line.Metrics.Ascent, Y + Line.Metrics.Descent);
-		PDSE.setSlideGlyphRuns(slideRuns ? (isSlideLeftLine ? slideRunsExtra : slideRuns) : null);
+		PDSE.setSlideGlyphRuns(slideRuns ? (isSlideLeftLine ? slideRunsExtra : slideRuns) : null, slideLineY);
 		for (var CurRange = 0; CurRange < RangesCount; CurRange++)
 		{
 			X = this.Lines[CurLine].Ranges[CurRange].XVisible + slideShiftX;
@@ -11147,7 +11148,8 @@ Paragraph.SLIDE_TEXT_POSITION_GRID = 25.4 / 3000;
  * @param {number} x
  * @param {number} y
  * @param {{top: number, transform: ?AscCommon.CMatrix, stretch: number}} info - from GetSlideBaselineInfo
- * @returns {{x: number, y: number}}
+ * @returns {{x: number, y: number, slideY: ?number}} slideY: the rounded baseline down the slide before the stretch, in
+ *          mm (null when it is not stretched), from which PowerPoint's PDF also sizes the text (getSlideDeviceX)
  */
 Paragraph.prototype.GetSlideLinePos = function(x, y, info)
 {
@@ -11156,12 +11158,12 @@ Paragraph.prototype.GetSlideLinePos = function(x, y, info)
 	
 	// halves go down (a fourth line of 13.5 pt at 93% spacing, 472.5 steps down, is drawn at 472)
 	let baseline = info.top + Math.floor((y - info.top) / GRID + 0.5 - 1e-9) * GRID;
-	let dx = 0, dy = 0;
+	let dx = 0, dy = 0, slideY = null;
 	let t  = info.transform;
 	if (info.stretch && t)
 	{
 		// the shift down the slide, in the text's own coordinates
-		let slideY = t.TransformPointY(x, baseline);
+		slideY = t.TransformPointY(x, baseline);
 		let shift  = Math.floor(slideY * (1 + info.stretch) / POS_GRID + 0.5) * POS_GRID - slideY;
 		let det    = t.sx * t.sy - t.shx * t.shy;
 		if (Math.abs(det) > 1e-9)
@@ -11170,7 +11172,7 @@ Paragraph.prototype.GetSlideLinePos = function(x, y, info)
 			dy = t.sx * shift / det;
 		}
 	}
-	return {x : x + dx, y : baseline + dy};
+	return {x : x + dx, y : baseline + dy, slideY : slideY};
 };
 /**
  * PowerPoint lays point-based spacing out in whole points, halves up (spcBef/spcAft 4.5 pt -> 5 pt,

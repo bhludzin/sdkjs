@@ -93,6 +93,13 @@
 	{
 		this.Grapheme = grapheme;
 	};
+	/**
+	 * @returns {number} the font size (pt) the space is measured at: its run's, or its script size
+	 */
+	CRunSpace.prototype.GetFontSize = function()
+	{
+		return (((this.Flags >> 16) & 0xFFFF) / 64);
+	};
 	CRunSpace.prototype.SetMetrics = function(fontSize, fontSlot, textPr)
 	{
 		this.SetScriptFlag(textPr.VertAlign !== AscCommon.vertalign_Baseline);
