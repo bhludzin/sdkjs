@@ -1194,8 +1194,13 @@
 					oSpPr.ln = AscFormat.CreateNoFillLine();
 				}
 				let penW = 0;
+				const bSlide = !!(Asc.editor && Asc.editor.isPresentationEditor);
 				if (this.pen && this.pen.isVisible() && this.brush && this.brush.isVisible()) {
 					penW = this.pen.w ? this.pen.w / 36000.0 : 12700.0 / 36000.0;
+				} else if (bSlide && this.getObjectType() === AscDFH.historyitem_type_ImageShape && this.pen && this.pen.isVisible()) {
+					// A picture's outline lies outside it (I-012), and PowerPoint's shadow takes the outline in:
+					// the silhouette grows by the full line width on each side.
+					penW = 2 * (this.pen.w ? this.pen.w / 36000.0 : 12700.0 / 36000.0);
 				}
 				let W = this.extX + penW;
 				let H = this.extY + penW;
@@ -1213,7 +1218,8 @@
 				}
 
 				let dist = outerShdw.dist ? outerShdw.dist / 36000 : 0;
-				if(AscFormat.fApproxEqual(W, W0) && AscFormat.fApproxEqual(H, H0) && AscFormat.fApproxEqual(dist, 0)) {
+				// PowerPoint never grows a shadow that sits under its shape: it is hidden unless blurred.
+				if(!bSlide && AscFormat.fApproxEqual(W, W0) && AscFormat.fApproxEqual(H, H0) && AscFormat.fApproxEqual(dist, 0)) {
 					const nAppendValue = 1;
 					W += nAppendValue;
 					H += nAppendValue;
@@ -1313,9 +1319,225 @@
 		if (this.shdwSp && outerShdw && needToDrawShadow) {
 			this.shdwSp.transform = this.shdwSp.getShdwTransform(outerShdw, this);
 			this.shdwSp.recalculateBounds();
+			if (!graphics.isBoundsChecker() && drawSlideBlurredShadow(this.shdwSp, outerShdw, graphics)) {
+				return;
+			}
 			this.shdwSp.draw(graphics);
 		}
 	};
+
+	// PowerPoint draws an outer shadow whose blurRad is above 0 as an image: the shadow's silhouette (the object
+	// moved by dist/dir and scaled by sx/sy, in the shadow colour at its alpha times the fill's) blurred with a
+	// Gaussian whose standard deviation is blurRad / 3. The image reaches blurRad past the silhouette, at 200 dpi
+	// divided by ceil(blurRad * 3 / 8 pt). Measured on PowerPoint's PDF export (I-014). Slides only; other editors
+	// and renderers keep the flat silhouette.
+	const SLIDE_SHADOW_BASE_DPI = 200;
+	const SLIDE_SHADOW_MAX_PX = 2000; // the native raster's own limit
+
+	function getSlideShadowRaster(oShdwSp, dBlurMM) {
+		const oChecker = new AscFormat.CSlideBoundsChecker();
+		oChecker.CheckLineWidth(oShdwSp);
+		oShdwSp.draw(oChecker);
+		oChecker.CorrectBounds2();
+		const oBounds = oChecker.Bounds;
+		if (!(oBounds.max_x > oBounds.min_x) || !(oBounds.max_y > oBounds.min_y)) {
+			return null;
+		}
+		const dBlurPt = dBlurMM * 72 / 25.4;
+		let dPx = 25.4 / SLIDE_SHADOW_BASE_DPI * Math.max(1, Math.ceil(dBlurPt * 3 / 8 - 1e-9));
+		const dX = oBounds.min_x - dBlurMM;
+		const dY = oBounds.min_y - dBlurMM;
+		const dW = oBounds.max_x - oBounds.min_x + 2 * dBlurMM;
+		const dH = oBounds.max_y - oBounds.min_y + 2 * dBlurMM;
+		dPx = Math.max(dPx, dW / SLIDE_SHADOW_MAX_PX, dH / SLIDE_SHADOW_MAX_PX);
+		const nW = Math.max(1, Math.ceil(dW / dPx));
+		const nH = Math.max(1, Math.ceil(dH / dPx));
+		return {x: dX, y: dY, w: nW * dPx, h: nH * dPx, wPx: nW, hPx: nH, px: dPx};
+	}
+
+	// The silhouette's pixels (RGBA, non-premultiplied) in the raster, or null.
+	function drawSlideShadowSilhouette(oShdwSp, oRaster) {
+		if (window["NATIVE_EDITOR_ENJINE"]) {
+			if (!window["native"] || !AscCommon.CNativeGraphics || typeof CreateEmbedObject === "undefined") {
+				return null;
+			}
+			const oGraphics = new AscCommon.CNativeGraphics();
+			oGraphics.width = oRaster.wPx;
+			oGraphics.height = oRaster.hPx;
+			oGraphics.create(window["native"], oRaster.wPx, oRaster.hPx, oRaster.w, oRaster.h);
+			oGraphics.CoordTransformOffset(-oRaster.x / oRaster.px, -oRaster.y / oRaster.px);
+			oGraphics.transform(1, 0, 0, 1, 0, 0);
+			oShdwSp.draw(oGraphics);
+			const sUrl = oGraphics.toDataURL("image/png");
+			if (oGraphics.Destroy) {
+				oGraphics.Destroy();
+			}
+			const nComma = sUrl ? sUrl.indexOf(",") : -1;
+			if (nComma < 0) {
+				return null;
+			}
+			const oImage = CreateEmbedObject("CZipEmbed")["decodeImage"](AscCommon.Base64.decode(sUrl.substring(nComma + 1)), true);
+			if (!oImage || oImage["width"] !== oRaster.wPx || oImage["height"] !== oRaster.hPx) {
+				return null;
+			}
+			// The raster comes back bottom row first.
+			const aData = oImage["data"];
+			const nStride = 4 * oRaster.wPx;
+			const aRows = new Uint8Array(aData.length);
+			for (let y = 0; y < oRaster.hPx; ++y) {
+				aRows.set(aData.subarray(y * nStride, (y + 1) * nStride), (oRaster.hPx - 1 - y) * nStride);
+			}
+			return aRows;
+		}
+		if (typeof document === "undefined" || !AscCommon.CGraphics) {
+			return null;
+		}
+		const oCanvas = document.createElement("canvas");
+		oCanvas.width = oRaster.wPx;
+		oCanvas.height = oRaster.hPx;
+		const oContext = oCanvas.getContext("2d");
+		const oGraphics = new AscCommon.CGraphics();
+		oGraphics.init(oContext, oRaster.wPx, oRaster.hPx, oRaster.w, oRaster.h);
+		oGraphics.m_oFontManager = AscCommon.g_fontManager;
+		oGraphics.m_oCoordTransform.tx = -oRaster.x / oRaster.px;
+		oGraphics.m_oCoordTransform.ty = -oRaster.y / oRaster.px;
+		oGraphics.transform(1, 0, 0, 1, 0, 0);
+		oShdwSp.draw(oGraphics);
+		oRaster.canvas = oCanvas;
+		return oContext.getImageData(0, 0, oRaster.wPx, oRaster.hPx).data;
+	}
+
+	function blurSlideShadowAlpha(aRGBA, nW, nH, dSigma) {
+		const nR = Math.max(1, Math.ceil(3 * dSigma));
+		const aKernel = new Float64Array(2 * nR + 1);
+		let dSum = 0;
+		for (let i = -nR; i <= nR; ++i) {
+			aKernel[i + nR] = Math.exp(-i * i / (2 * dSigma * dSigma));
+			dSum += aKernel[i + nR];
+		}
+		for (let i = 0; i < aKernel.length; ++i) {
+			aKernel[i] /= dSum;
+		}
+		const aRow = new Float32Array(nW * nH);
+		for (let y = 0; y < nH; ++y) {
+			const nRow = y * nW;
+			for (let x = 0; x < nW; ++x) {
+				let dValue = 0;
+				const nFrom = Math.max(0, x - nR), nTo = Math.min(nW - 1, x + nR);
+				for (let xx = nFrom; xx <= nTo; ++xx) {
+					dValue += aRGBA[4 * (nRow + xx) + 3] * aKernel[xx - x + nR];
+				}
+				aRow[nRow + x] = dValue;
+			}
+		}
+		const aAlpha = new Float32Array(nW * nH);
+		for (let y = 0; y < nH; ++y) {
+			const nFrom = Math.max(0, y - nR), nTo = Math.min(nH - 1, y + nR);
+			for (let x = 0; x < nW; ++x) {
+				let dValue = 0;
+				for (let yy = nFrom; yy <= nTo; ++yy) {
+					dValue += aRow[yy * nW + x] * aKernel[yy - y + nR];
+				}
+				aAlpha[y * nW + x] = dValue;
+			}
+		}
+		return aAlpha;
+	}
+
+	function getSlideShadowColor(oShdwSp) {
+		const oFill = (oShdwSp.brush && oShdwSp.brush.isVisible()) ? oShdwSp.brush : (oShdwSp.pen && oShdwSp.pen.Fill);
+		const oRGBA = oFill && oFill.fill && oFill.fill.color && oFill.fill.color.RGBA;
+		return oRGBA ? oRGBA : {R: 0, G: 0, B: 0};
+	}
+
+	// The blurred shadow as an image ({x, y, w, h} in mm and a canvas or a PNG data URL), cached on the shadow shape.
+	function getSlideBlurredShadowImage(oShdwSp, oOuterShdw, bNeedUrl) {
+		const dBlurMM = oOuterShdw.blurRad / 36000;
+		const oT = oShdwSp.transform;
+		const sKey = [oT.sx, oT.shy, oT.shx, oT.sy, oT.tx, oT.ty, oOuterShdw.blurRad].join(",");
+		let oCache = oShdwSp.slideBlurredShadow;
+		if (oCache && oCache.key === sKey && (!bNeedUrl || oCache.url)) {
+			return oCache.image;
+		}
+		const oRaster = getSlideShadowRaster(oShdwSp, dBlurMM);
+		const aRGBA = oRaster && drawSlideShadowSilhouette(oShdwSp, oRaster);
+		if (!aRGBA) {
+			return null;
+		}
+		const aAlpha = blurSlideShadowAlpha(aRGBA, oRaster.wPx, oRaster.hPx, dBlurMM / 3 / oRaster.px);
+		const oColor = getSlideShadowColor(oShdwSp);
+		const oImage = {x: oRaster.x, y: oRaster.y, w: oRaster.w, h: oRaster.h, canvas: null, url: null};
+		if (oRaster.canvas) {
+			const oContext = oRaster.canvas.getContext("2d");
+			const oData = oContext.createImageData(oRaster.wPx, oRaster.hPx);
+			const aOut = oData.data;
+			for (let i = 0, n = aAlpha.length; i < n; ++i) {
+				aOut[4 * i] = oColor.R;
+				aOut[4 * i + 1] = oColor.G;
+				aOut[4 * i + 2] = oColor.B;
+				aOut[4 * i + 3] = Math.round(aAlpha[i]);
+			}
+			oContext.setTransform(1, 0, 0, 1, 0, 0);
+			oContext.clearRect(0, 0, oRaster.wPx, oRaster.hPx);
+			oContext.putImageData(oData, 0, 0);
+			oImage.canvas = oRaster.canvas;
+			if (bNeedUrl) {
+				oImage.url = oRaster.canvas.toDataURL("image/png");
+			}
+		} else {
+			const aOut = new Uint8Array(4 * aAlpha.length);
+			for (let i = 0, n = aAlpha.length; i < n; ++i) {
+				aOut[4 * i] = oColor.R;
+				aOut[4 * i + 1] = oColor.G;
+				aOut[4 * i + 2] = oColor.B;
+				aOut[4 * i + 3] = Math.max(0, Math.min(255, Math.round(aAlpha[i])));
+			}
+			const aPng = CreateEmbedObject("CZipEmbed")["encodeImageData"](aOut, oRaster.wPx, oRaster.hPx, 4 * oRaster.wPx, 4, true);
+			if (!aPng) {
+				return null;
+			}
+			oImage.url = "data:image/png;base64," + AscCommon.Base64.encode(aPng);
+		}
+		oShdwSp.slideBlurredShadow = {key: sKey, image: oImage, url: !!oImage.url};
+		return oImage;
+	}
+
+	function drawSlideBlurredShadow(oShdwSp, oOuterShdw, graphics) {
+		if (!(oOuterShdw.blurRad > 0) || !Asc.editor || !Asc.editor.isPresentationEditor) {
+			return false;
+		}
+		const bPdf = graphics.isPdf();
+		const bCanvas = !bPdf && AscCommon.CGraphics && graphics instanceof AscCommon.CGraphics && !!graphics.m_oContext;
+		if (!bPdf && !bCanvas) {
+			return false;
+		}
+		if (oShdwSp.slideBlurredShadowFailed) {
+			return false;
+		}
+		let oImage = null;
+		try {
+			oImage = getSlideBlurredShadowImage(oShdwSp, oOuterShdw, bPdf);
+		} catch (e) {
+			// Fall back to the flat silhouette rather than lose the slide.
+			oShdwSp.slideBlurredShadowFailed = true;
+		}
+		if (!oImage) {
+			return false;
+		}
+		graphics.SaveGrState();
+		graphics.transform3(new AscCommon.CMatrix());
+		if (bPdf) {
+			const bOldUseOrigin = graphics.UseOriginImageUrl;
+			graphics.UseOriginImageUrl = true;
+			graphics.drawImage(oImage.url, oImage.x, oImage.y, oImage.w, oImage.h);
+			graphics.UseOriginImageUrl = bOldUseOrigin;
+		} else {
+			graphics.drawImage2(oImage.canvas, oImage.x, oImage.y, oImage.w, oImage.h);
+		}
+		graphics.RestoreGrState();
+		graphics.reset();
+		return true;
+	}
 	CGraphicObjectBase.prototype.getShdwTransform = function(outerShdw, mainShape) {
 		const oTransform = new AscCommon.CMatrix();
 		if(this.flipH) {
@@ -1432,8 +1654,13 @@
 
 		var dist = outerShdw.dist ? outerShdw.dist / 36000 : 0;
 		var dir = outerShdw.dir ? outerShdw.dir : 0;
-		dX += dist * Math.cos(AscFormat.cToRad * dir);
-		dY += dist * Math.sin(AscFormat.cToRad * dir);
+		var dirRad = AscFormat.cToRad * dir;
+		if (outerShdw.rotWithShape && Asc.editor && Asc.editor.isPresentationEditor && mainShape.getFullRotate) {
+			// rotWithShape="1": PowerPoint turns the shadow's direction with the shape.
+			dirRad += mainShape.getFullRotate();
+		}
+		dX += dist * Math.cos(dirRad);
+		dY += dist * Math.sin(dirRad);
 		oTransform.tx += dX;
 		oTransform.ty += dY;
 		return oTransform;
