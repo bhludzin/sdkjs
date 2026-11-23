@@ -73,6 +73,17 @@
 		this.mathTextInfo = null;
 		this.paraMath     = null;
 		
+		// Slide text: where PowerPoint draws the glyphs across the slide (see getSlideGlyphX)
+		this.slideRuns     = null;  // {transform, stretch, offset, grid, extras} for this line, or null
+		this.slideRunStart = true;  // the next glyph starts a glyph run
+		this.slideShift    = 0;     // how far from its layout position the glyph run's next glyph is drawn, in mm
+		this.slidePhase    = 0;     // the sixteenth of a grid step its start was rounded off, -8..7
+		this.slideVisible  = false; // whether it has had a glyph other than a space
+		this.slideExtras   = false; // whether it gets the extra steps
+		this.slideAfterDash = false; // the next glyph run follows a hyphen or a dash
+		this.slideLineGlyph = false; // the line has had a glyph other than a space
+		this.slideLastSpace = false; // the line's last glyph was a space
+		
 		this.bidiFlow = new AscWord.BidiFlow(this);
 	}
 	ParagraphContentDrawState.prototype.init = function()
@@ -104,7 +115,24 @@
 		
 		this.Y = baseLine;
 	};
-	ParagraphContentDrawState.prototype.beginRange = function(range, x)
+	/**
+	 * @param info {?{transform: AscCommon.CMatrix, stretch: number, offset: number, grid: number, extras: boolean}} -
+	 *        Paragraph.GetSlideTextGridX's grid for this line, null for text drawn at its layout positions
+	 */
+	ParagraphContentDrawState.prototype.setSlideGlyphRuns = function(info)
+	{
+		this.slideRuns      = info;
+		this.slideRunStart  = true;
+		this.slideAfterDash = false;
+		this.slideLineGlyph = false;
+		this.slideLastSpace = false;
+	};
+	/**
+	 * @param range {number}
+	 * @param x {number}
+	 * @param [numShift=0] {number} - slide text: how much further on than its layout the text after the numbering starts
+	 */
+	ParagraphContentDrawState.prototype.beginRange = function(range, x, numShift)
 	{
 		this.run = null;
 		
@@ -112,9 +140,18 @@
 		
 		this.X = x;
 		
+		this.slideRunStart  = true;
+		this.slideAfterDash = false;
+		this.slideLineGlyph = false;
+		this.slideLastSpace = false;
+		
 		let isRtl = this.Paragraph.isRtlDirection();
 		if (this.Paragraph.Numbering.checkRange(this.Range, this.Line) && !isRtl)
+		{
 			this.handleNumbering();
+			if (numShift)
+				this.X += numShift;
+		}
 		
 		this.bidiFlow.begin(this.Paragraph.isRtlDirection());
 	};
@@ -179,6 +216,10 @@
 			return;
 		
 		this.run = run;
+		
+		// PowerPoint draws each a:r as a glyph run of its own, but one of only spaces goes on into the next
+		if (this.slideVisible)
+			this.slideRunStart = true;
 		
 		this.yOffset = run.getYOffset();
 		
@@ -302,12 +343,103 @@
 	 */
 	ParagraphContentDrawState.prototype.handleText = function(text, direction)
 	{
+		let x = this.X;
+		if (this.slideRuns)
+		{
+			let codePoint = text.GetCodePoint();
+			
+			// PowerPoint draws a hyphen, an en dash or an em dash as a glyph run of its own
+			let isDash = (0x002D === codePoint || 0x2013 === codePoint || 0x2014 === codePoint);
+			if (isDash || AscBidi.DIRECTION.R === direction)
+				this.slideRunStart = true;
+			
+			if (AscBidi.DIRECTION.R !== direction)
+				x = this.getSlideGlyphX(text.GetWidthVisible(), 0x00A0 !== codePoint);
+			
+			if (isDash)
+			{
+				this.slideRunStart  = true;
+				this.slideAfterDash = true;
+			}
+		}
+		
 		if (AscBidi.DIRECTION.R === direction && AscBidi.isPairedBracket(text.GetCodePoint()))
-			text.Draw(this.X, this.calcY - this.yOffset, this.Graphics, this, this.textPr, AscBidi.getPairedBracketGrapheme(text.Grapheme));
+			text.Draw(x, this.calcY - this.yOffset, this.Graphics, this, this.textPr, AscBidi.getPairedBracketGrapheme(text.Grapheme));
 		else
-			text.Draw(this.X, this.calcY - this.yOffset, this.Graphics, this, this.textPr);
+			text.Draw(x, this.calcY - this.yOffset, this.Graphics, this, this.textPr);
 		
 		this.X += text.GetWidthVisible();
+	};
+	/**
+	 * Slide text (I-027): where PowerPoint's PDF draws a glyph across the slide, for its layout position this.X.
+	 * Its PDF puts text positions on a 1/3000-inch grid, stretched about the slide's left edge (GetSlideTextGridX). It
+	 * starts each glyph run (each a:r, and each hyphen, en dash or em dash on its own) at its layout position stretched
+	 * and rounded to that grid, and keeps the sixteenths of a step the start was rounded down by (-8..7). Each glyph
+	 * then advances by its own unstretched width, plus a step whenever its stretch (in sixteenths of a step, rounded)
+	 * and those sixteenths reach half a step. As the sixteenths are not carried on from glyph to glyph, a run whose
+	 * start was rounded down by 7/16 has every glyph wider than about 5 pt drawn a step further on than the one
+	 * before, which makes the run up to 2 per mille longer than its layout (at 6/16, glyphs wider than about 15 pt);
+	 * most runs are drawn at their layout widths. Spaces before the first other glyph of a run do carry the sixteenths
+	 * on at the start of a line (an a:r of only spaces going on into the next a:r); later in a line they are drawn on
+	 * their own. Only left and justified lines (extras), whose start is known to a sixteenth, get the extra steps, and
+	 * of those only the line's first glyph run and glyph runs that follow another glyph straight on (an a:r boundary
+	 * inside a word or before punctuation): not those after a space, a hyphen or a dash, whose sixteenths are not
+	 * known, nor runs with character spacing, which PowerPoint draws with the PDF's Tc.
+	 * @param width {number} - the glyph's width in the layout, in mm
+	 * @param isVisible {boolean} - whether it is a glyph other than a space
+	 * @returns {number} the x to draw the glyph at
+	 */
+	ParagraphContentDrawState.prototype.getSlideGlyphX = function(width, isVisible)
+	{
+		let info = this.slideRuns;
+		let t    = info.transform;
+		let grid = info.grid;
+		
+		// spaces that open a glyph run after the line's first glyph are drawn on their own: the glyph after them
+		// starts the glyph run again, without the extra steps (PowerPoint drew 1 of 36 such runs long)
+		let isRestart = (!this.slideRunStart && isVisible && !this.slideVisible && this.slideLineGlyph);
+		if (this.slideRunStart || isRestart)
+		{
+			this.slideRunStart = false;
+			
+			// the start in sixteenths of a step, on the slide
+			let slideX = t.TransformPointX(this.X, this.Y);
+			let pos16  = Math.floor(16 * (slideX * (1 + info.stretch) / grid + info.offset));
+			let start  = Math.floor((pos16 + 8) / 16);
+			
+			this.slidePhase   = pos16 - 16 * start;
+			this.slideShift   = (start * grid - slideX) / t.sx;
+			this.slideVisible = false;
+			
+			// later in a line, a glyph run after a space, a hyphen or a dash does not get them either (on the 1646-slide
+			// deck PowerPoint drew 6 of 80 such runs long, and 523 of 572 after another glyph)
+			let afterSpace = this.slideLineGlyph && this.slideLastSpace;
+			this.slideExtras    = info.extras && !this.slideAfterDash && !afterSpace && !isRestart;
+			this.slideAfterDash = false;
+		}
+		
+		let x = this.X + this.slideShift;
+		
+		if (isVisible)
+		{
+			this.slideVisible   = true;
+			this.slideLineGlyph = true;
+		}
+		this.slideLastSpace = !isVisible;
+		
+		// runs with character spacing (spc) are drawn with the PDF's Tc and do not get the extra steps
+		if (this.slideExtras && !this.textPr.Spacing)
+		{
+			let stretch16 = Math.floor(16 * width * t.sx / grid * info.stretch + 0.5);
+			let steps     = Math.floor((this.slidePhase + 8 + stretch16) / 16);
+			if (steps > 0)
+				this.slideShift += steps * grid / t.sx;
+			
+			if (!this.slideVisible)
+				this.slidePhase += stretch16 - 16 * steps;
+		}
+		
+		return x;
 	};
 	/**
 	 * @param drawing {ParaDrawing}
@@ -317,6 +449,8 @@
 		if (!drawing.IsInline())
 			return;
 		
+		this.slideRunStart = true;
+		
 		drawing.Draw(this.X, this.calcY - this.yOffset, this.Graphics, this, this.textPr);
 		this.X += drawing.GetWidthVisible();
 		
@@ -325,10 +459,21 @@
 	};
 	/**
 	 * @param element {AscWord.CRunElementBase}
+	 * @param [direction] {AscBidi.DIRECTION}
 	 */
-	ParagraphContentDrawState.prototype.handleRegularElement = function(element)
+	ParagraphContentDrawState.prototype.handleRegularElement = function(element, direction)
 	{
-		element.Draw(this.X, this.calcY - this.yOffset, this.Graphics, this, this.textPr);
+		let x = this.X;
+		if (this.slideRuns)
+		{
+			// a space is a glyph of the glyph run; a tab or anything else ends it
+			if (para_Space === element.Type && AscBidi.DIRECTION.R !== direction)
+				x = this.getSlideGlyphX(element.GetWidthVisible(), false);
+			else
+				this.slideRunStart = true;
+		}
+		
+		element.Draw(x, this.calcY - this.yOffset, this.Graphics, this, this.textPr);
 		this.X += element.GetWidthVisible();
 		
 		if (element.IsTab())
@@ -378,6 +523,8 @@
 	{
 		if (para_Math_Placeholder === element.Type && this.Graphics.isPdf())
 			return;
+		
+		this.slideRunStart = true;
 		
 		let linePos = this.paraMath.GetLinePosition(this.Line, this.Range);
 		element.Draw(linePos.x, linePos.y, this.Graphics, this.mathTextInfo);

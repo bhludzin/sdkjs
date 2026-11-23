@@ -3090,6 +3090,19 @@ Paragraph.prototype.drawRunContentElements = function(CurPage, pGraphics, drawSt
 	
 	PDSE.resetPage(CurPage);
 	let slideBaselines = this.IsSlideText() ? this.GetSlideBaselineInfo() : null;
+	
+	// Slide text across the slide (PDSE.getSlideGlyphX): glyph runs on PowerPoint's stretched grid, and in left and
+	// justified lines (whose start is known to 1/16 of that grid) the extra step its wide glyphs get from there.
+	let slideRuns = null, slideRunsExtra = null;
+	if (slideBaselines && slideBaselines.gridX && !this.isRtlDirection())
+	{
+		let gridX = slideBaselines.gridX;
+		slideRuns      = {transform : slideBaselines.transform, stretch : gridX.stretch, offset : gridX.offset, grid : Paragraph.SLIDE_TEXT_POSITION_GRID, extras : false};
+		slideRunsExtra = {transform : slideBaselines.transform, stretch : gridX.stretch, offset : gridX.offset, grid : Paragraph.SLIDE_TEXT_POSITION_GRID, extras : true};
+	}
+	let slideJc = Pr.ParaPr.Jc;
+	let isSlideLeftLine = (AscCommon.align_Left === slideJc || AscCommon.align_Justify === slideJc || AscCommon.align_Distributed === slideJc);
+	
 	for (var CurLine = StartLine; CurLine <= EndLine; CurLine++)
 	{
 		var Line        = this.Lines[CurLine];
@@ -3118,13 +3131,26 @@ Paragraph.prototype.drawRunContentElements = function(CurPage, pGraphics, drawSt
 		}
 		
 		PDSE.resetLine(CurLine, Y, Y - Line.Metrics.Ascent, Y + Line.Metrics.Descent);
+		PDSE.setSlideGlyphRuns(slideRuns ? (isSlideLeftLine ? slideRunsExtra : slideRuns) : null);
 		for (var CurRange = 0; CurRange < RangesCount; CurRange++)
 		{
 			X = this.Lines[CurLine].Ranges[CurRange].XVisible + slideShiftX;
 
+			// PowerPoint starts a left or justified line at its indent rounded to whole 1/600 inch (nearest), and the
+			// text after a bullet at its own indent (marL) rounded so
+			let numShift = 0;
+			if (slideRuns && isSlideLeftLine)
+			{
+				let indent = this.Lines[CurLine].Ranges[CurRange].XVisible - this.Pages[CurPage].X;
+				let snap   = Paragraph.GetSlideIndentSnap(indent);
+				X += snap;
+				if (this.Numbering.checkRange(CurRange, CurLine))
+					numShift = Paragraph.GetSlideIndentSnap(indent + this.Numbering.getVisibleWidth()) - snap;
+			}
+			
 			var Range = Line.Ranges[CurRange];
 			
-			PDSE.beginRange(CurRange, X);
+			PDSE.beginRange(CurRange, X, numShift);
 			
 			var StartPos = Range.StartPos;
 			var EndPos   = Range.EndPos;
@@ -3141,6 +3167,7 @@ Paragraph.prototype.drawRunContentElements = function(CurPage, pGraphics, drawSt
 
 		pGraphics.End_Command();
 	}
+	PDSE.setSlideGlyphRuns(null);
 };
 Paragraph.prototype.drawRunContentLines = function(CurPage, pGraphics, drawState)
 {
@@ -11031,7 +11058,8 @@ Paragraph.prototype.IsSlideText = function()
 /**
  * What GetSlideLinePos needs for this paragraph's lines: the top of the text (the content's origin, which the
  * text transform puts after the inset and the anchoring), the text transform onto the slide and the stretch.
- * @returns {{top: number, transform: ?AscCommon.CMatrix, stretch: number}}
+ * gridX is PowerPoint's grid across the slide (GetSlideTextGridX), null when it is not known or the text is turned.
+ * @returns {{top: number, transform: ?AscCommon.CMatrix, stretch: number, gridX: ?{stretch: number, offset: number}}}
  */
 Paragraph.prototype.GetSlideBaselineInfo = function()
 {
@@ -11039,16 +11067,58 @@ Paragraph.prototype.GetSlideBaselineInfo = function()
 	let top       = content && typeof content.Y === "number" && isFinite(content.Y) ? content.Y : 0;
 	let transform = this.Get_ParentTextTransform ? this.Get_ParentTextTransform() : null;
 	
-	let height       = 0;
+	let width = 0, height = 0;
 	let presentation = Asc.editor && Asc.editor.WordControl ? Asc.editor.WordControl.m_oLogicDocument : null;
-	if (presentation && presentation.GetHeightMM)
+	if (presentation && presentation.GetHeightMM && presentation.GetWidthMM)
+	{
+		width  = presentation.GetWidthMM();
 		height = presentation.GetHeightMM();
+	}
+	
+	// across the slide only for text that is not turned or flipped (the glyph runs of ParagraphContentDrawState)
+	let gridX = null;
+	if (transform && Math.abs(transform.shx) < 1e-9 && Math.abs(transform.shy) < 1e-9 && transform.sx > 0 && transform.sy > 0)
+		gridX = Paragraph.GetSlideTextGridX(width, height);
 	
 	return {
 		top       : top,
 		transform : transform,
-		stretch   : transform && height > 0 ? Paragraph.SLIDE_TEXT_STRETCH / height : 0
+		stretch   : transform && height > 0 ? Paragraph.SLIDE_TEXT_STRETCH / height : 0,
+		gridX     : gridX
 	};
+};
+/**
+ * The grid PowerPoint's PDF puts slide text on across the slide (I-027): positions x (from the slide's left edge, in
+ * 1/3000 inch) go to x * (1 + stretch) + offset, rounded to whole 1/3000 inch. Fitted on text boxes moved in 1-EMU
+ * steps, from the box positions where a line's start steps on to the next 1/3000 inch: on a 720 x 540 pt slide the
+ * stretch is 0.1068 pt over the width and the offset 0.0304 (the long runs of getSlideGlyphX start 19 EMU before
+ * each step, so the sixteenths are on the same grid), on a 960 x 540 pt slide 0.1234 pt and 0.0311. Null for other
+ * slide sizes, which have not been measured.
+ * @param {number} widthMM
+ * @param {number} heightMM
+ * @returns {?{stretch: number, offset: number}}
+ */
+Paragraph.GetSlideTextGridX = function(widthMM, heightMM)
+{
+	if (Math.abs(heightMM - 190.5) > 0.01)
+		return null;
+	if (Math.abs(widthMM - 254) < 0.01)
+		return Paragraph.SLIDE_GRID_X_720;
+	if (Math.abs(widthMM - 1016 / 3) < 0.01)
+		return Paragraph.SLIDE_GRID_X_960;
+	return null;
+};
+Paragraph.SLIDE_GRID_X_720 = {stretch : 1.48323e-4, offset : 0.0304};
+Paragraph.SLIDE_GRID_X_960 = {stretch : 1.28602e-4, offset : 0.0311};
+/**
+ * How far PowerPoint moves a line start at this indent (from the text area's left edge, in mm): to whole 1/600 inch,
+ * the nearest (I-027; marL 173038 EMU, 113.54 / 600 inch, starts at 114 / 600).
+ * @param {number} indent
+ * @returns {number}
+ */
+Paragraph.GetSlideIndentSnap = function(indent)
+{
+	return Math.floor(indent / Paragraph.SLIDE_BASELINE_GRID + 0.5 + 1e-9) * Paragraph.SLIDE_BASELINE_GRID - indent;
 };
 /**
  * 1/600 inch in mm: the step PowerPoint puts slide text baselines on, counted from the top of the text.
@@ -11071,9 +11141,8 @@ Paragraph.SLIDE_TEXT_POSITION_GRID = 25.4 / 3000;
  *   direction) is rounded to the nearest 1/600 inch, halves down;
  * - its PDF then stretches text positions down the slide by 0.1075 pt over the slide's height, about the slide's
  *   top edge, and puts them on a 1/3000-inch grid. 0.1075 pt matches 99% of the baselines of a 4:3 deck exactly;
- *   slides 720 and 1080 pt high fit 0.13 pt better (0.024 pt off at the bottom). Horizontally PowerPoint stretches
- *   text positions too (by about 0.12 pt over the slide's width), but it also draws the glyphs of a line about
- *   as much narrower than this layout does; that is left as it is.
+ *   slides 720 and 1080 pt high fit 0.13 pt better (0.024 pt off at the bottom). Across the slide PowerPoint
+ *   stretches and grids each glyph run's start instead (ParagraphContentDrawState.getSlideGlyphX).
  * Only where the glyphs are drawn changes: the layout, the cursor and the text decorations are not moved.
  * @param {number} x
  * @param {number} y
