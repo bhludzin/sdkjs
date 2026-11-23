@@ -1278,6 +1278,19 @@ function DrawLineEnd(xEnd, yEnd, xPrev, yPrev, type, w, len, drawer, trans)
     }
 }
 
+// The presets PowerPoint strokes with a miter join when their outline's join
+// is round or not given (measured on its PDF export of all 187 presets). Every
+// other preset and every custom geometry is stroked with a round join then.
+var SLIDE_MITER_JOIN_PRESETS = {
+    "bentUpArrow": true, "chevron": true, "cube": true, "downArrow": true, "ellipseRibbon": true,
+    "ellipseRibbon2": true, "leftArrowCallout": true, "leftRightArrowCallout": true, "leftUpArrow": true,
+    "mathEqual": true, "mathMinus": true, "mathMultiply": true, "mathNotEqual": true, "mathPlus": true,
+    "moon": true, "notchedRightArrow": true, "plus": true, "quadArrowCallout": true, "rightArrow": true,
+    "star4": true, "star5": true, "star8": true, "star10": true, "star12": true, "star16": true,
+    "star24": true, "star32": true, "stripedRightArrow": true, "upArrow": true, "upDownArrow": true,
+    "upDownArrowCallout": true
+};
+
 
 function CShapeDrawer()
 {
@@ -1301,6 +1314,8 @@ function CShapeDrawer()
     this.max_y = -0xFFFF;
 
     this.OldLineJoin = null;
+    this.LineJoinType = null;
+    this.IsSlideLineJoin = false;
     this.IsArrowsDrawing = false;
     this.IsCurrentPathCanArrows = true;
 
@@ -1332,6 +1347,8 @@ CShapeDrawer.prototype =
         this.max_y = -0xFFFF;
 
         this.OldLineJoin = null;
+        this.LineJoinType = null;
+        this.IsSlideLineJoin = false;
         this.IsArrowsDrawing = false;
         this.IsCurrentPathCanArrows = true;
 
@@ -1420,6 +1437,9 @@ CShapeDrawer.prototype =
     fromShape : function(shape, graphics)
     {
         this.IsRectShape = false;
+        this.OldLineJoin = null;
+        this.LineJoinType = null;
+        this.IsSlideLineJoin = false;
         this.Shape = shape;
         this.Graphics = graphics;
         this.UniFill = shape.brush;
@@ -1577,7 +1597,10 @@ CShapeDrawer.prototype =
 
 
 
-            if (this.Graphics.m_oContext != null && this.Ln.Join != null && this.Ln.Join.type != null)
+            if (this.Ln.Join != null && this.Ln.Join.type != null)
+                this.LineJoinType = this.Ln.Join.type;
+
+            if (this.Graphics.m_oContext != null && this.LineJoinType != null)
                 this.OldLineJoin = this.Graphics.m_oContext.lineJoin;
         }
 
@@ -1590,10 +1613,36 @@ CShapeDrawer.prototype =
         }
     },
 
+    // PowerPoint strokes the outline of a slide shape or picture whose join is
+    // not given (in its a:ln or its theme line style) with a round join, except
+    // for the presets in SLIDE_MITER_JOIN_PRESETS, which it strokes with a
+    // miter join even when the join is round. A bevel or miter join is used as
+    // given. The PDF writer gets the join too (put_PenLineJoin in drawFillStroke).
+    checkSlideLineJoin : function(geom)
+    {
+        if (!this.Ln || this.bIsNoStrokeAttack || !Asc.editor || !Asc.editor.isPresentationEditor
+            || !(this.Shape instanceof AscFormat.CShape || this.Shape instanceof AscFormat.CImageShape))
+            return;
+
+        var joinType = this.LineJoinType;
+        if (joinType == null || joinType === AscFormat.LineJoinType.Empty || joinType === AscFormat.LineJoinType.Round)
+        {
+            var preset = geom ? geom.preset : "rect";
+            joinType = (preset && SLIDE_MITER_JOIN_PRESETS[preset] === true) ? AscFormat.LineJoinType.Miter : AscFormat.LineJoinType.Round;
+        }
+
+        this.LineJoinType = joinType;
+        this.IsSlideLineJoin = true;
+        if (this.Graphics.m_oContext != null && this.OldLineJoin == null)
+            this.OldLineJoin = this.Graphics.m_oContext.lineJoin;
+    },
+
     draw : function(geom)
     {
         if (this.bIsNoStrokeAttack && this.bIsNoFillAttack)
             return;
+
+        this.checkSlideLineJoin(geom);
 
         var bIsPatt = false;
         if (this.UniFill != null && this.UniFill.fill != null &&
@@ -2469,7 +2518,7 @@ CShapeDrawer.prototype =
 
         if (null != this.OldLineJoin && !this.IsArrowsDrawing)
         {
-            switch (this.Ln.Join.type)
+            switch (this.LineJoinType)
             {
                 case AscFormat.LineJoinType.Round:
                 {
@@ -2550,9 +2599,15 @@ CShapeDrawer.prototype =
 
 			var isArrowsPresent = this.isArrowPresent();
 
+            var isSlideJoinSet = false;
             if (bIsStroke)
             {
-                if (null != this.OldLineJoin && !this.IsArrowsDrawing)
+                if (this.IsSlideLineJoin && !this.IsArrowsDrawing && this.Graphics.put_PenLineJoin)
+                {
+                    this.Graphics.put_PenLineJoin(AscFormat.ConvertJoinAggType(this.LineJoinType));
+                    isSlideJoinSet = true;
+                }
+                else if (null != this.OldLineJoin && !this.IsArrowsDrawing)
                 {
                     this.Graphics.put_PenLineJoin(AscFormat.ConvertJoinAggType(this.Ln.Join.type));
                 }
@@ -2822,6 +2877,10 @@ CShapeDrawer.prototype =
                 this.Graphics.b_color1(0, 0, 0, 0);
                 this.Graphics.drawpath(256);
             }
+
+            // back to the writer's default (miter) for the strokes that follow
+            if (isSlideJoinSet)
+                this.Graphics.put_PenLineJoin(AscFormat.ConvertJoinAggType(AscFormat.LineJoinType.Miter));
 
 			if (isArrowsPresent) {
 				const bIsSaveToPdfMode = true;
