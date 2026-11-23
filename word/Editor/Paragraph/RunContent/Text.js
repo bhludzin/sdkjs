@@ -159,6 +159,13 @@
 	{
 		return (this.Flags & FLAGS_TEMPORARY ? this.TempGrapheme : this.Grapheme);
 	};
+	/**
+	 * @returns {number} the font size (pt) the item is measured and drawn at: its run's, or its script size
+	 */
+	CRunText.prototype.GetFontSize = function()
+	{
+		return (((this.Flags >> 16) & 0xFFFF) / 64);
+	};
 	CRunText.prototype.ResetTemporaryGrapheme = function()
 	{
 		this.Flags &= FLAGS_NON_TEMPORARY;

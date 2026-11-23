@@ -83,7 +83,14 @@
 		this.slideAfterDash = false; // the next glyph run follows a hyphen or a dash
 		this.slideLineGlyph = false; // the line has had a glyph other than a space
 		this.slideLastSpace = false; // the line's last glyph was a space
-		
+		this.slideDevice    = false; // the glyph run is drawn from its device positions (getSlideDeviceX)
+		this.slideRunX      = 0;     // the layout position of its start, in mm
+		this.slideCount     = 0;     // how many glyphs it has had
+		this.slidePrev      = null;  // its last glyph: {dev, nat, kern, isSpace, w, u} (getSlideDeviceX)
+		this.slidePdf       = 0;     // where its PDF draws the glyph, in grid steps from its start
+		this.slideAcc       = 0;     // what its PDF writer has not yet written out, in 1/1000 em of the PDF's font size
+		this.slideLineY     = null;  // the line's rounded baseline down the slide before the stretch, in mm, or null
+
 		this.bidiFlow = new AscWord.BidiFlow(this);
 	}
 	ParagraphContentDrawState.prototype.init = function()
@@ -116,12 +123,16 @@
 		this.Y = baseLine;
 	};
 	/**
-	 * @param info {?{transform: AscCommon.CMatrix, stretch: number, offset: number, grid: number, extras: boolean}} -
-	 *        Paragraph.GetSlideTextGridX's grid for this line, null for text drawn at its layout positions
+	 * @param info {?{transform: AscCommon.CMatrix, stretch: number, offset: number, grid: number, extras: boolean,
+	 *        stretchY: number}} - Paragraph.GetSlideTextGridX's grid for this line, null for text drawn at its layout
+	 *        positions
+	 * @param [lineY=null] {?number} - the line's rounded baseline down the slide before the stretch, in mm
+	 *        (Paragraph.GetSlideLinePos), null when it is not known
 	 */
-	ParagraphContentDrawState.prototype.setSlideGlyphRuns = function(info)
+	ParagraphContentDrawState.prototype.setSlideGlyphRuns = function(info, lineY)
 	{
 		this.slideRuns      = info;
+		this.slideLineY     = (undefined !== lineY ? lineY : null);
 		this.slideRunStart  = true;
 		this.slideAfterDash = false;
 		this.slideLineGlyph = false;
@@ -354,7 +365,7 @@
 				this.slideRunStart = true;
 			
 			if (AscBidi.DIRECTION.R !== direction)
-				x = this.getSlideGlyphX(text.GetWidthVisible(), 0x00A0 !== codePoint);
+				x = this.getSlideGlyphX(text.GetWidthVisible(), 0x00A0 !== codePoint, AscWord.GetSlideGlyphAdvance(text.GetGrapheme()), text.GetFontSize());
 			
 			if (isDash)
 			{
@@ -385,50 +396,66 @@
 	 * of those only the line's first glyph run and glyph runs that follow another glyph straight on (an a:r boundary
 	 * inside a word or before punctuation): not those after a space, a hyphen or a dash, whose sixteenths are not
 	 * known, nor runs with character spacing, which PowerPoint draws with the PDF's Tc.
+	 * Inside a glyph run the glyphs go where PowerPoint's device puts them and its PDF writer writes them
+	 * (getSlideDeviceX, I-024), which draws them a little closer together than the layout; runs with character
+	 * spacing, and glyphs whose own advance is not known, are drawn at their layout widths.
 	 * @param width {number} - the glyph's width in the layout, in mm
 	 * @param isVisible {boolean} - whether it is a glyph other than a space
+	 * @param [advance=0] {number} - its font's unkerned advance, in mm per pt of font size (0 when not known)
+	 * @param [fontSize=0] {number} - the font size it is drawn at, in pt
 	 * @returns {number} the x to draw the glyph at
 	 */
-	ParagraphContentDrawState.prototype.getSlideGlyphX = function(width, isVisible)
+	ParagraphContentDrawState.prototype.getSlideGlyphX = function(width, isVisible, advance, fontSize)
 	{
 		let info = this.slideRuns;
 		let t    = info.transform;
 		let grid = info.grid;
-		
+
+		let hasAdvance = (advance > 0 && fontSize > 0);
+
 		// spaces that open a glyph run after the line's first glyph are drawn on their own: the glyph after them
 		// starts the glyph run again, without the extra steps (PowerPoint drew 1 of 36 such runs long)
 		let isRestart = (!this.slideRunStart && isVisible && !this.slideVisible && this.slideLineGlyph);
-		if (this.slideRunStart || isRestart)
+		// a glyph whose advance is not known in a run drawn from its device positions starts a glyph run of its own
+		let isUnknown = (!this.slideRunStart && this.slideDevice && !hasAdvance);
+		if (this.slideRunStart || isRestart || isUnknown)
 		{
 			this.slideRunStart = false;
-			
+
 			// the start in sixteenths of a step, on the slide
 			let slideX = t.TransformPointX(this.X, this.Y);
 			let pos16  = Math.floor(16 * (slideX * (1 + info.stretch) / grid + info.offset));
 			let start  = Math.floor((pos16 + 8) / 16);
-			
+
 			this.slidePhase   = pos16 - 16 * start;
 			this.slideShift   = (start * grid - slideX) / t.sx;
 			this.slideVisible = false;
-			
+
 			// later in a line, a glyph run after a space, a hyphen or a dash does not get them either (on the 1646-slide
 			// deck PowerPoint drew 6 of 80 such runs long, and 523 of 572 after another glyph)
 			let afterSpace = this.slideLineGlyph && this.slideLastSpace;
-			this.slideExtras    = info.extras && !this.slideAfterDash && !afterSpace && !isRestart;
+			this.slideExtras    = info.extras && !this.slideAfterDash && !afterSpace && !isRestart && !isUnknown;
 			this.slideAfterDash = false;
+
+			this.slideDevice = hasAdvance && !this.textPr.Spacing;
+			this.slideRunX   = this.X;
+			this.slideCount  = 0;
+			this.slidePrev   = null;
+			this.slidePdf    = 0;
+			this.slideAcc    = 0;
 		}
-		
-		let x = this.X + this.slideShift;
-		
+
+		let x = this.slideDevice ? this.getSlideDeviceX(width, isVisible, advance, fontSize) : this.X + this.slideShift;
+
 		if (isVisible)
 		{
 			this.slideVisible   = true;
 			this.slideLineGlyph = true;
 		}
 		this.slideLastSpace = !isVisible;
-		
+
 		// runs with character spacing (spc) are drawn with the PDF's Tc and do not get the extra steps
-		if (this.slideExtras && !this.textPr.Spacing)
+		if (!this.slideDevice && this.slideExtras && !this.textPr.Spacing)
 		{
 			let stretch16 = Math.floor(16 * width * t.sx / grid * info.stretch + 0.5);
 			let steps     = Math.floor((this.slidePhase + 8 + stretch16) / 16);
@@ -438,8 +465,122 @@
 			if (!this.slideVisible)
 				this.slidePhase += stretch16 - 16 * steps;
 		}
-		
+
 		return x;
+	};
+	/**
+	 * Slide text (I-024): where PowerPoint's PDF draws a glyph of a glyph run (getSlideGlyphX), from where its device
+	 * puts it and how its PDF writer writes that. Measured on PowerPoint's PDF export of the 1646-slide deck (Calibri
+	 * 12.75, 13.5 and 18 pt) and of a test deck (Calibri 12 to 32 pt, glyphs repeated and a sentence, in three boxes):
+	 * - The device works in whole pixels of 600 dpi, at a font size of round(size * 600 / 72) pixels per em. A glyph
+	 *   after a space (a word start) goes to the pixel nearest its layout position from the run's start (an exact half
+	 *   goes down below 1024 pixels and up from there). Any other glyph follows the one before by that one's advance in
+	 *   whole pixels plus its kerning in whole pixels, and is moved back a pixel at a time while it is more than 3.5
+	 *   pixels ahead of its layout position, and on a pixel at a time while its end (its start and its own advance in
+	 *   pixels) is 5.5 pixels or more short of the next glyph's layout position.
+	 * - The PDF writer draws each glyph by its width in the PDF's font (1/1000 em: the advance rounded to 1/64 and then
+	 *   to whole units) at a font size of 5 grid steps a pixel per em, stretched down the slide from the baseline (a
+	 *   step larger in some lines). It adds up how far the device's advances (with their extra steps) are ahead
+	 *   of those widths, and when that reaches 3 units either way it moves the next glyph by it, less a half, cut
+	 *   towards zero, and starts again from nothing: what it leaves out is lost, so glyphs end up slightly closer
+	 *   together than the device has them (about 0.27 per mille at 13.5 pt, 0.5 at 18 pt, 1.3 at 12.75 pt).
+	 * Spaces before the first other glyph of the run are not written: the glyph after them starts the PDF's text there.
+	 * Glyph runs are measured from their own start, not the line's. On the deck this gives PowerPoint's moves exactly
+	 * in 63% of lines at 13.5 pt, 32% at 18 pt and 95% at 12.75 pt, and the line ends to within 0.06 per mille; the
+	 * rest are word starts a pixel off, which PowerPoint rounds a little unevenly.
+	 * @param width {number} - the glyph's width in the layout, in mm
+	 * @param isVisible {boolean} - whether it is a glyph other than a space
+	 * @param advance {number} - its font's unkerned advance, in mm per pt of font size
+	 * @param fontSize {number} - the font size it is drawn at, in pt
+	 * @returns {number} the x to draw the glyph at
+	 */
+	ParagraphContentDrawState.prototype.getSlideDeviceX = function(width, isVisible, advance, fontSize)
+	{
+		let info  = this.slideRuns;
+		let t     = info.transform;
+		let grid  = info.grid;
+		let steps = t.sx / grid; // grid steps (1/3000 inch, 5 a pixel) per mm of the layout
+
+		// its layout position from the run's start (item widths are kept cut to 1/16384 mm: half of that back for each)
+		let ref = (this.X - this.slideRunX + this.slideCount * 0.5 / AscWord.TEXTWIDTH_DIVIDER) * steps;
+
+		let ppem = Math.floor(fontSize * 600 / 72 + 0.5);
+		let em   = advance * 72 / 25.4;
+		let nat  = 5 * Math.floor(em * ppem + 0.5 + 1e-9);
+
+		let prev = this.slidePrev;
+		let dev  = 0;
+		if (prev && isVisible && prev.isSpace)
+		{
+			let px   = ref / 5;
+			let half = Math.abs(px - Math.floor(px) - 0.5) < 1e-3;
+			dev = 5 * (half ? (px < 1024 ? Math.floor(px) : Math.ceil(px)) : Math.floor(px + 0.5));
+		}
+		else if (prev)
+		{
+			dev = prev.dev + prev.nat + prev.kern;
+			while (dev - ref > 17.5)
+				dev -= 5;
+
+			let nextRef = ref + width * steps;
+			while (nextRef - (dev + nat) >= 27.5)
+				dev += 5;
+		}
+
+		if (prev)
+		{
+			let devAdvance = dev - prev.dev;
+			let pdfAdvance = devAdvance;
+			if (this.slideExtras)
+			{
+				let stretch16 = Math.floor(16 * devAdvance * info.stretch + 0.5);
+				let extra     = Math.floor((this.slidePhase + 8 + stretch16) / 16);
+				pdfAdvance += extra;
+				if (!this.slideVisible)
+					this.slidePhase += stretch16 - 16 * extra;
+			}
+
+			if (!this.slideVisible)
+			{
+				this.slidePdf += pdfAdvance;
+			}
+			else
+			{
+				let acc  = Math.round((this.slideAcc + pdfAdvance / prev.u - prev.w) * 1e9) / 1e9;
+				let move = 0;
+				if (Math.abs(acc) >= 3)
+				{
+					move = Math.trunc(acc - 0.5);
+					acc  = 0;
+				}
+				this.slideAcc  = acc;
+				this.slidePdf += (prev.w + move) * prev.u;
+			}
+		}
+
+		// the PDF's font size in grid steps: the font size in pixels stretched down the slide from the baseline, as the
+		// baseline is (GetSlideLinePos), so a step larger in some lines (Calibri 13.5 pt: 13.584 for 13.56 in one line
+		// in eight); its width of the glyph (1/1000 em) and the kerning after it in the layout
+		let tf = 5 * ppem;
+		if (null !== this.slideLineY && info.stretchY)
+		{
+			let lineY = this.slideLineY / grid;
+			tf = Math.floor((lineY + tf) * (1 + info.stretchY) + 0.5) - Math.floor(lineY * (1 + info.stretchY) + 0.5);
+		}
+		let w    = Math.floor((Math.floor(em * 64000 + 0.5 + 1e-6) + 32) / 64);
+		let kern = (width * 72 / 25.4 - Math.floor(em * 8 * fontSize + 0.5 + 1e-6) / 8) / fontSize;
+
+		this.slidePrev = {
+			dev     : dev,
+			nat     : nat,
+			kern    : 5 * Math.floor(kern * ppem + 0.5),
+			isSpace : !isVisible,
+			w       : w,
+			u       : tf / 1000
+		};
+		this.slideCount++;
+
+		return this.slideRunX + this.slideShift + this.slidePdf * grid / t.sx;
 	};
 	/**
 	 * @param drawing {ParaDrawing}
@@ -468,7 +609,10 @@
 		{
 			// a space is a glyph of the glyph run; a tab or anything else ends it
 			if (para_Space === element.Type && AscBidi.DIRECTION.R !== direction)
-				x = this.getSlideGlyphX(element.GetWidthVisible(), false);
+			{
+				let fontInfo = this.textPr.GetFontInfo(AscWord.fontslot_ASCII);
+				x = this.getSlideGlyphX(element.GetWidthVisible(), false, AscWord.GetSlideSpaceAdvance(fontInfo.Name, fontInfo.Style), element.GetFontSize());
+			}
 			else
 				this.slideRunStart = true;
 		}

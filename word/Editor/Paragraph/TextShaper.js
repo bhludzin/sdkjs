@@ -373,6 +373,8 @@
 
 		let width   = AscFonts.GetGraphemeWidth(grapheme);
 		let enWidth = getEastAsiaEnWidth(fontInfo.Name, fontInfo.Style);
+		if (AscWord.fontslot_ASCII === fontSlot && width > 0)
+			spaceAdvances[fontInfo.Name + "|" + fontInfo.Style] = width;
 
 		let layoutFontSize = this.private_GetLayoutFontSize(fontInfo.Size);
 		if (layoutFontSize > 0)
@@ -626,6 +628,31 @@
 
 		return advances[gid];
 	}
+	// Font name + style -> unkerned advance of its space (mm per pt of font size), as the shaper measured it
+	let spaceAdvances = {};
+	/**
+	 * Slide text (I-024): the unkerned advance (mm per pt of font size) of a shaped glyph, measured when its word was
+	 * shaped, or 0 when it is not known (a ligature or other substituted glyph, a font emboldened in code).
+	 * @param grapheme {number}
+	 * @returns {number}
+	 */
+	function getSlideGlyphAdvance(grapheme)
+	{
+		let gid = AscFonts.GetGraphemeSingleGid(grapheme);
+		return gid < 0 ? 0 : getGlyphAdvance(AscFonts.GetGraphemeFontId(grapheme), gid);
+	}
+	/**
+	 * Slide text (I-024): the unkerned advance (mm per pt of font size) of a font's space, or 0 when no space of it
+	 * has been shaped.
+	 * @param fontName {string}
+	 * @param fontStyle {number}
+	 * @returns {number}
+	 */
+	function getSlideSpaceAdvance(fontName, fontStyle)
+	{
+		let advance = spaceAdvances[fontName + "|" + fontStyle];
+		return advance > 0 ? advance : 0;
+	}
 	/**
 	 * Measures and caches the unkerned advances of the glyphs the given code points map to,
 	 * in the font the shaper is about to use, at AscFonts.MEASURE_FONTSIZE (the size the shaped
@@ -792,5 +819,7 @@
 	window['AscWord'].CODEPOINT_TYPE      = CODEPOINT_TYPE;
 	window['AscWord'].ParagraphTextShaper = new CParagraphTextShaper();
 	window['AscWord'].stringShaper        = new AscFonts.StringShaper();
+	window['AscWord'].GetSlideGlyphAdvance = getSlideGlyphAdvance;
+	window['AscWord'].GetSlideSpaceAdvance = getSlideSpaceAdvance;
 
 })(window);
