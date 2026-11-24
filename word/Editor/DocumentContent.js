@@ -2207,7 +2207,9 @@ CDocumentContent.prototype.StartFromNewPage = function()
 };
 CDocumentContent.prototype.Get_ParentTextTransform = function()
 {
-	let parentTransform = this.Parent ? this.Parent.Get_ParentTextTransform() : null;
+	// A content can hang off a parent with no text transform: the presentation itself, for the "Aa" sample the
+	// master and layout thumbnails draw (CMasterThumbnailDrawer), whose paragraphs slide text asks for one.
+	let parentTransform = this.Parent && this.Parent.Get_ParentTextTransform ? this.Parent.Get_ParentTextTransform() : null;
 	let transform = this.transform ? this.transform.CreateDublicate() : null;
 	if (transform && parentTransform)
 	{
