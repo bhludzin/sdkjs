@@ -77,20 +77,20 @@ CBuilderImages.prototype =
                 oCopyFill = this.SpPr.Fill.createDuplicate();
                 if(oCopyFill.fill && oCopyFill.fill.type === c_oAscFill.FILL_TYPE_BLIP)
                 {
-                    oCopyFill.fill.setRasterImageId(url);
+                    oCopyFill.fill.moveRasterImageId(url);
                     this.SpPr.setFill(oCopyFill);
                 }
             }
             if(this.Ln && this.SpPr && this.SpPr === this.Ln && this.Ln.Fill && this.Ln.Fill.fill && this.Ln.Fill.fill.type === c_oAscFill.FILL_TYPE_BLIP)
             {
                 oCopyLn = this.Ln.createDuplicate();
-                oCopyLn.Fill.fill.setRasterImageId(url);
+                oCopyLn.Fill.fill.moveRasterImageId(url);
                 this.SpPr.setLn(oCopyLn);
             }
             if(this.ImageShape && this.ImageShape.blipFill)
             {
                 oCopyBlipFill = this.ImageShape.blipFill.createDuplicate();
-                oCopyBlipFill.setRasterImageId(url);
+                oCopyBlipFill.moveRasterImageId(url);
                 this.ImageShape.setBlipFill(oCopyBlipFill);
             }
             if(this.TextPr && !this.Ln)
@@ -101,7 +101,7 @@ CBuilderImages.prototype =
                     if(oPr.DefaultRunPr && oPr.DefaultRunPr.Unifill && oPr.DefaultRunPr.Unifill.fill && oPr.DefaultRunPr.Unifill.fill.type === c_oAscFill.FILL_TYPE_BLIP)
                     {
                         var Pr = this.Paragraph.Pr.Copy();
-                        Pr.DefaultRunPr.Unifill.fill.setRasterImageId(url);
+                        Pr.DefaultRunPr.Unifill.fill.moveRasterImageId(url);
                         this.Paragraph.Set_Pr(Pr);
                     }
                 }
@@ -110,13 +110,13 @@ CBuilderImages.prototype =
                     if(this.ParaTextPr && this.ParaTextPr.Value && this.ParaTextPr.Value.Unifill && this.ParaTextPr.Value.Unifill.fill && this.ParaTextPr.Value.Unifill.fill.type === c_oAscFill.FILL_TYPE_BLIP)
                     {
                         oCopyFill = this.ParaTextPr.Value.Unifill.createDuplicate();
-                        oCopyFill.fill.setRasterImageId(url);
+                        oCopyFill.fill.moveRasterImageId(url);
                         this.ParaTextPr.Set_Unifill(oCopyFill);
                     }
                     if(this.Run && this.Run.Pr && this.Run.Pr.Unifill && this.Run.Pr.Unifill.fill && this.Run.Pr.Unifill.fill.type === c_oAscFill.FILL_TYPE_BLIP)
                     {
                         oCopyFill = this.Run.Pr.Unifill.createDuplicate();
-                        oCopyFill.fill.setRasterImageId(url);
+                        oCopyFill.fill.moveRasterImageId(url);
                         this.Run.Set_Unifill(oCopyFill);
                     }
                 }
@@ -135,7 +135,10 @@ CBuilderImages.prototype =
                     }
                 }
             }
-            this.BlipFill.RasterImageId = url;
+            if (this.BlipFill.moveRasterImageId)
+                this.BlipFill.moveRasterImageId(url, true);
+            else
+                this.BlipFill.RasterImageId = url;
         }
     }
 };
@@ -3029,6 +3032,7 @@ function BinaryPPTYLoader()
         s.Skip2(1);
 
         let builderImage = null;
+        let aBlipExtLst = null;
 
         while (true)
         {
@@ -3162,6 +3166,11 @@ function BinaryPPTYLoader()
                     s.Skip2(1); // end attribute
                     break;
                 }
+                case 4:
+                {
+                    aBlipExtLst = this.ReadBlipExtLst();
+                    break;
+                }
                 default:
                 {
                     s.SkipRecord();
@@ -3170,12 +3179,99 @@ function BinaryPPTYLoader()
             }
         }
 
+        if (aBlipExtLst && !this.IsThemeLoader)
+        {
+            uni_fill.fill.setBlipExtLst(aBlipExtLst);
+        }
         if (this.IsUseFullUrl && builderImage)
         {
             this.RebuildImages.push(builderImage);
         }
         s.Seek2(_e2);
     }
+
+    // Record 4 of a blip: a:extLst entries kept as XML with the media they relate (see
+    // CBlipFill.blipExtLst). ULONG count, then per a:ext a record 0 with string attributes
+    // 0 uri, 1 xml, holding a record 0 per part with string attributes 0 rId, 1 relationship
+    // type, 2 file name in the media folder.
+    this.ReadBlipExtLst = function ()
+    {
+        var s = this.stream;
+        var _len = s.GetLong();
+        var _end = s.cur + _len;
+
+        var aExtLst = [];
+        var nCount = s.GetULong();
+        for (var i = 0; i < nCount && s.cur < _end; ++i)
+        {
+            s.Skip2(1); // type 0
+            var _len_ext = s.GetLong();
+            var _end_ext = s.cur + _len_ext;
+            var oExt = {uri: "", xml: "", parts: []};
+
+            s.Skip2(1); // start attributes
+            while (true)
+            {
+                var _at = s.GetUChar();
+                if (_at === g_nodeAttributeEnd)
+                    break;
+                var sValue = s.GetString2();
+                if (0 === _at)
+                    oExt.uri = sValue;
+                else if (1 === _at)
+                    oExt.xml = sValue;
+            }
+            while (s.cur < _end_ext)
+            {
+                var _t = s.GetUChar();
+                if (0 !== _t)
+                {
+                    s.SkipRecord();
+                    continue;
+                }
+                var _len_part = s.GetLong();
+                var _end_part = s.cur + _len_part;
+                var oPart = {rId: "", type: "", path: ""};
+                s.Skip2(1); // start attributes
+                while (true)
+                {
+                    var _at2 = s.GetUChar();
+                    if (_at2 === g_nodeAttributeEnd)
+                        break;
+                    var sValue2 = s.GetString2();
+                    if (0 === _at2)
+                        oPart.rId = sValue2;
+                    else if (1 === _at2)
+                        oPart.type = sValue2;
+                    else if (2 === _at2)
+                        oPart.path = sValue2;
+                }
+                s.Seek2(_end_part);
+                oExt.parts.push(oPart);
+            }
+            s.Seek2(_end_ext);
+
+            // pasted: a part is kept only if it is a file of this document
+            var bKeep = oExt.xml.length > 0;
+            if (bKeep && this.IsUseFullUrl)
+            {
+                for (var j = 0; j < oExt.parts.length; ++j)
+                {
+                    var sLocal = AscCommon.g_oDocumentUrls.getImageLocal(oExt.parts[j].path);
+                    if (!sLocal)
+                    {
+                        bKeep = false;
+                        break;
+                    }
+                    oExt.parts[j].path = sLocal;
+                }
+            }
+            if (bKeep)
+                aExtLst.push(oExt);
+        }
+        s.Seek2(_end);
+        return aExtLst.length > 0 ? aExtLst : null;
+    };
 
 
     this.ReadUniFill = function(oSpPr, oImageShape, oLn, oParagraph, oBullet)

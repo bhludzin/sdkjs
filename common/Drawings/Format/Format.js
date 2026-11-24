@@ -3504,6 +3504,15 @@
 			this.Effects = [];
 			this.type = c_oAscFillBlipType.STRETCH;
 			this.texture_id = null;
+
+			// The a:blip a:extLst entries the editor does not model, such as PowerPoint's a14:imgProps
+			// picture corrections, whose a14:imgLayer relates the original picture (an HD Photo .wdp
+			// file in the media folder). They are written back as read (record 4 of the blip in the
+			// binary) while the fill keeps the image they were read with, blipExtImageId; replacing
+			// the image drops them. Shared between duplicates, never changed:
+			// [{uri, xml, parts: [{rId, type, path}]}]
+			this.blipExtLst = null;
+			this.blipExtImageId = null;
 		}
 		InitClass(CBlipFill, CBaseFill, 0);
 
@@ -3546,6 +3555,27 @@
 			w.WriteLong(this.Effects.length);
 			for (var i = 0; i < this.Effects.length; ++i) {
 				this.Effects[i].Write_ToBinary(w);
+			}
+
+			// The blip extensions with the image they belong to: changes carry them to the copies made
+			// in the editor (the desktop save applies the changes to the opened binary). A picture's
+			// fill change goes without its image id (createDuplicateNoRaster; the id follows in parts).
+			const aExtLst = this.blipExtLst && (this.blipExtImageId === this.RasterImageId || !this.RasterImageId) ? this.blipExtLst : null;
+			w.WriteBool(!!aExtLst);
+			if (aExtLst) {
+				writeString(w, this.blipExtImageId);
+				w.WriteLong(aExtLst.length);
+				for (let nExt = 0; nExt < aExtLst.length; ++nExt) {
+					const oExt = aExtLst[nExt];
+					writeString(w, oExt.uri);
+					writeString(w, oExt.xml);
+					w.WriteLong(oExt.parts.length);
+					for (let nPart = 0; nPart < oExt.parts.length; ++nPart) {
+						writeString(w, oExt.parts[nPart].rId);
+						writeString(w, oExt.parts[nPart].type);
+						writeString(w, oExt.parts[nPart].path);
+					}
+				}
 			}
 		};
 		CBlipFill.prototype.Read_FromBinary = function (r) {
@@ -3590,6 +3620,29 @@
 					break;
 				this.Effects.push(effect);
 			}
+
+			this.blipExtLst = null;
+			this.blipExtImageId = null;
+			if (r.GetBool()) {
+				const aExtLst = [];
+				let sExtImageId = readString(r);
+				const sCorrectExtImageId = sExtImageId ? AscCommon.getImageFromChanges(sExtImageId) : null;
+				if (null != sCorrectExtImageId)
+					sExtImageId = sCorrectExtImageId;
+				const nExtCount = r.GetLong();
+				for (let nExt = 0; nExt < nExtCount; ++nExt) {
+					const oExt = {uri: readString(r), xml: readString(r), parts: []};
+					const nPartCount = r.GetLong();
+					for (let nPart = 0; nPart < nPartCount; ++nPart) {
+						oExt.parts.push({rId: readString(r), type: readString(r), path: readString(r)});
+					}
+					aExtLst.push(oExt);
+				}
+				if (aExtLst.length > 0 && sExtImageId) {
+					this.blipExtLst = aExtLst;
+					this.blipExtImageId = sExtImageId;
+				}
+			}
 		};
 		CBlipFill.prototype.Refresh_RecalcData = function () {
 		};
@@ -3611,9 +3664,34 @@
 		CBlipFill.prototype.setRasterImageId = function (rasterImageId) {
 			this.RasterImageId = checkRasterImageId(rasterImageId);
 		};
+		CBlipFill.prototype.setBlipExtLst = function (aExtLst) {
+			this.blipExtLst = Array.isArray(aExtLst) && aExtLst.length > 0 ? aExtLst : null;
+			this.blipExtImageId = this.blipExtLst ? this.RasterImageId : null;
+		};
+		CBlipFill.prototype.getBlipExtLstToWrite = function () {
+			if (this.blipExtLst && this.blipExtImageId === this.RasterImageId) {
+				return this.blipExtLst;
+			}
+			return null;
+		};
+		// The same image under another id (pasted, uploaded or relinked): its extensions stay valid.
+		// bAsIs: take the id as given, as callers that assign RasterImageId directly do.
+		CBlipFill.prototype.moveRasterImageId = function (rasterImageId, bAsIs) {
+			const bKeepExtLst = !!this.getBlipExtLstToWrite();
+			if (bAsIs) {
+				this.RasterImageId = rasterImageId;
+			} else {
+				this.setRasterImageId(rasterImageId);
+			}
+			if (bKeepExtLst) {
+				this.blipExtImageId = this.RasterImageId;
+			}
+		};
 		CBlipFill.prototype.createDuplicate = function () {
 			var duplicate = new CBlipFill();
 			duplicate.RasterImageId = this.RasterImageId;
+			duplicate.blipExtLst = this.blipExtLst;
+			duplicate.blipExtImageId = this.blipExtImageId;
 
 			if (isRealObject(this.stretch)) {
 				duplicate.stretch = this.stretch.createDuplicate();
@@ -3832,9 +3910,14 @@
 		};
 		CBlipFill.prototype.createDuplicateNoRaster = function(transparent) {
 			let sId = this.RasterImageId;
+			const bExtLst = !!this.getBlipExtLstToWrite();
 			this.RasterImageId = null;
 			let copy = this.createDuplicate();
 			this.RasterImageId = sId;
+			if (!bExtLst) {
+				copy.blipExtLst = null;
+				copy.blipExtImageId = null;
+			}
 			return copy;
 		};
 
@@ -6774,7 +6857,7 @@
 			const sId = this.checkRasterImageId();
 			if (sId && mapUrl[sId] && mapUrl[sId] !== sId) {
 				const oNewBlipFill = this.fill.createDuplicate();
-				oNewBlipFill.setRasterImageId(mapUrl[sId]);
+				oNewBlipFill.moveRasterImageId(mapUrl[sId]);
 				const oNewUniFill = this.createDuplicate();
 				oNewUniFill.setFill(oNewBlipFill);
 				return oNewUniFill;
@@ -10382,7 +10465,7 @@
 					const oUnifill = aFillLists[i][nIdx];
 					const sId = oUnifill && oUnifill.checkRasterImageId();
 					if(sId && oImageMap[sId]) {
-						oUnifill.fill.RasterImageId = oImageMap[sId];
+						oUnifill.fill.moveRasterImageId(oImageMap[sId], true);
 					}
 				}
 			}
@@ -10390,7 +10473,7 @@
 				const oLn = this.lnStyleLst[nIdx];
 				const sId = oLn && oLn.checkRasterImageId();
 				if(sId && oImageMap[sId]) {
-					oLn.Fill.fill.RasterImageId = oImageMap[sId];
+					oLn.Fill.fill.moveRasterImageId(oImageMap[sId], true);
 				}
 			}
 		};
