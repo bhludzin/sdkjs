@@ -2973,9 +2973,64 @@ function CBinaryFileWriter()
         oThis.WriteUChar(g_nodeAttributeEnd);
         oThis.EndRecord();
 
+        oThis.WriteBlipExtLst(fill);
+
         oThis.EndRecord();
 
     }
+
+    // Record 4 of a blip (see BinaryPPTYLoader.ReadBlipExtLst): the a:extLst entries kept with
+    // the fill, while it has the image they were read with.
+    this.WriteBlipExtLst = function (fill) {
+        var aExtLst = fill.getBlipExtLstToWrite ? fill.getBlipExtLstToWrite() : null;
+        if (!aExtLst) {
+            return;
+        }
+        var aWrite = [];
+        for (var i = 0; i < aExtLst.length; ++i) {
+            var oExt = aExtLst[i];
+            var aParts = [];
+            for (var j = 0; j < oExt.parts.length; ++j) {
+                var sPath = oExt.parts[j].path;
+                if (oThis.IsUseFullUrl) {
+                    // copied: the part as this document's url, kept on paste into this document only
+                    sPath = (window["IsEmbedImagesInInternalFormat"] === true) ? null : AscCommon.g_oDocumentUrls.getImageUrl(sPath);
+                }
+                if (typeof sPath !== "string" || sPath.length === 0) {
+                    aParts = null;
+                    break;
+                }
+                aParts.push({rId: oExt.parts[j].rId, type: oExt.parts[j].type, path: sPath});
+            }
+            if (aParts) {
+                aWrite.push({uri: oExt.uri, xml: oExt.xml, parts: aParts});
+            }
+        }
+        if (aWrite.length === 0) {
+            return;
+        }
+        oThis.StartRecord(4);
+        oThis.WriteULong(aWrite.length);
+        for (var k = 0; k < aWrite.length; ++k) {
+            oThis.StartRecord(0);
+            oThis.WriteUChar(g_nodeAttributeStart);
+            oThis._WriteString1(0, aWrite[k].uri);
+            oThis._WriteString1(1, aWrite[k].xml);
+            oThis.WriteUChar(g_nodeAttributeEnd);
+            for (var n = 0; n < aWrite[k].parts.length; ++n) {
+                var oPart = aWrite[k].parts[n];
+                oThis.StartRecord(0);
+                oThis.WriteUChar(g_nodeAttributeStart);
+                oThis._WriteString1(0, oPart.rId);
+                oThis._WriteString1(1, oPart.type);
+                oThis._WriteString1(2, oPart.path);
+                oThis.WriteUChar(g_nodeAttributeEnd);
+                oThis.EndRecord();
+            }
+            oThis.EndRecord();
+        }
+        oThis.EndRecord();
+    };
 
     this.WriteUniFill = function(unifill)
     {

@@ -243,7 +243,7 @@ AscFormat.InitClass(Slide, AscFormat.CBaseFormatObject, AscDFH.historyitem_type_
             images_rename[fill.RasterImageId])
         {
             let oBg = bg.createFullCopy();
-            oBg.bgPr.Fill.fill.RasterImageId = images_rename[oBg.bgPr.Fill.fill.RasterImageId];
+            oBg.bgPr.Fill.fill.moveRasterImageId(images_rename[oBg.bgPr.Fill.fill.RasterImageId], true);
             this.changeBackground(oBg);
 
             if (this.recalculateBackground) {

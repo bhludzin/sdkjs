@@ -1043,7 +1043,7 @@
 			if (mapUrl[this.blipFill.RasterImageId]) {
 				if (this.setBlipFill) {
 					const blip_fill = this.blipFill.createDuplicate();
-					blip_fill.setRasterImageId(mapUrl[this.blipFill.RasterImageId]);
+					blip_fill.moveRasterImageId(mapUrl[this.blipFill.RasterImageId]);
 					this.setBlipFill(blip_fill);
 				}
 			}
