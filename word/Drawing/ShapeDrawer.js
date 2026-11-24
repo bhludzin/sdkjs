@@ -2070,6 +2070,26 @@ CShapeDrawer.prototype =
 		this.CheckDash();
 	},
 
+	// The picture with its colour effects (clrChange, lum, duotone) baked in, or null to draw the picture as it is
+	// (I-030, slides only).
+	getBlipEffectsImage: function (needUrl) {
+		const fill = this.UniFill && this.UniFill.fill;
+		if (!fill || !Array.isArray(fill.Effects) || fill.Effects.length === 0 || !AscFormat.getSlideBlipEffectsImage) {
+			return null;
+		}
+		return AscFormat.getSlideBlipEffectsImage(fill, this.Shape, needUrl);
+	},
+
+	getBlipTextureSrc: function () {
+		const image = this.getBlipEffectsImage(true);
+		return image && image.url ? image.url : getFullImageSrc2(this.UniFill.fill.RasterImageId);
+	},
+
+	getBlipCanvas: function () {
+		const image = this.getBlipEffectsImage(false);
+		return image && image.canvas ? image.canvas : this.UniFill.fill.canvas;
+	},
+
 	drawBlipFill: function () {
 		const graphics = this.Graphics.isTrack() ? this.Graphics.Graphics : this.Graphics;
 		if (!graphics) return;
@@ -2181,7 +2201,7 @@ CShapeDrawer.prototype =
 			offsetX + alignOffsetX,
 			offsetY + alignOffsetY,
 			flipH, flipV,
-			this.UniFill.fill.canvas
+			this.getBlipCanvas()
 		);
 
 		graphics.m_bPenColorInit = false;
@@ -2244,7 +2264,7 @@ CShapeDrawer.prototype =
 			alpha,
 			dstRect.l, dstRect.t, dstRect.r - dstRect.l, dstRect.b - dstRect.t,
 			srcRect,
-			this.UniFill.fill.canvas
+			this.getBlipCanvas()
 		);
 	},
 
@@ -2266,7 +2286,7 @@ CShapeDrawer.prototype =
             }
     
             if (this.isPdf()) {
-                const image = getFullImageSrc2(this.UniFill.fill.RasterImageId);
+                const image = this.getBlipTextureSrc();
                 const type = this.UniFill.fill.tile != null && this.Graphics.m_oContext !== undefined ? 1 : 0;
                 this.Graphics.put_brushTexture(image, type);
             } else {
@@ -2640,7 +2660,7 @@ CShapeDrawer.prototype =
                         {
                             if (this.UniFill.fill.RasterImageId && this.UniFill.fill.RasterImageId.indexOf(".svg") != 0)
                             {
-                                this.Graphics.put_brushTexture(getFullImageSrc2(this.UniFill.fill.RasterImageId), 0);
+                                this.Graphics.put_brushTexture(this.getBlipTextureSrc(), 0);
                             }
                             else
                             {
@@ -2656,7 +2676,7 @@ CShapeDrawer.prototype =
                         }
                         else
                         {
-	                        this.Graphics.put_brushTexture(getFullImageSrc2(this.UniFill.fill.RasterImageId), 0);
+	                        this.Graphics.put_brushTexture(this.getBlipTextureSrc(), 0);
 	                        const fillRect = getFillRect(this.min_x, this.min_y, (this.max_x - this.min_x), (this.max_y - this.min_y), this.UniFill.fill.srcRect);
 	                        this.Graphics.put_TextureBounds(fillRect.x, fillRect.y, fillRect.w, fillRect.h);
                         }
@@ -2698,7 +2718,7 @@ CShapeDrawer.prototype =
                         }
                         else
                         {
-                            imageUrl = getFullImageSrc2(this.UniFill.fill.RasterImageId);
+                            imageUrl = this.getBlipTextureSrc();
                         }
 
                         this.Graphics.put_brushTexture(imageUrl, type);
