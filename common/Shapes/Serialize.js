@@ -5668,8 +5668,9 @@ function BinaryPPTYLoader()
                 }
                 case 5:
                 {
-                    var _len = s.GetULong();
-                    s.Skip2(_len);
+                    // scene3d: kept (outside the history, not saved) for the presentation editor, which draws its camera
+                    spPr.scene3d = new AscFormat.Scene3d();
+                    spPr.scene3d.fromPPTY(this);
                     break;
                 }
                 case 6:

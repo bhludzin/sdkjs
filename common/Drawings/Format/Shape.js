@@ -5561,6 +5561,15 @@
 			if (this.checkNeedRecalculate && this.checkNeedRecalculate()) {
 				return;
 			}
+			// A scene3d camera (slides): draw as the camera sees the shape (I-032).
+			if (this.spPr && this.spPr.scene3d && !this.slideCameraDrawing) {
+				const oThis = this;
+				if (AscFormat.drawWithSlideCamera(this, function (oTransform, oTransformText) {
+					oThis.draw(graphics, oTransform, oTransformText, pageIndex, opt);
+				}, graphics, transform, transformText)) {
+					return;
+				}
+			}
 
 			var oUR = graphics.updatedRect;
 			if (oUR && this.bounds) {

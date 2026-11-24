@@ -583,6 +583,15 @@
 			if (this.checkNeedRecalculate && this.checkNeedRecalculate()) {
 				return;
 			}
+			// A scene3d camera (slides): draw as the camera sees the picture (I-032).
+			if (this.spPr && this.spPr.scene3d && !this.slideCameraDrawing) {
+				const oThis = this;
+				if (AscFormat.drawWithSlideCamera(this, function (oTransform) {
+					oThis.draw(graphics, oTransform);
+				}, graphics, transform, undefined)) {
+					return;
+				}
+			}
 			var oUR = graphics.updatedRect;
 			if (oUR && this.bounds) {
 				if (!oUR.isIntersectOther(this.bounds)) {

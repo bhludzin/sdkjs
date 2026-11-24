@@ -1543,7 +1543,8 @@
 	// and alpha), then lum and duotone in the order the blip lists them. lum maps each channel v (0..1) to
 	// floor(255 * clip(k * (v - 1/2) + 1/2 + bright * (1 + k) / 2)) with k = 1 / (1 - contrast) for a positive
 	// contrast and 1 + contrast otherwise; duotone takes g = floor(0.2126 R + 0.7152 G + 0.0722 B) and mixes its two
-	// colours as round(c1 + (c2 - c1) * g / 255). Measured on PowerPoint's PDF export (I-030). Slides only.
+	// colours as round(c1 + (c2 - c1) * g / 255). Measured on PowerPoint's PDF export (I-030). A scene3d light on the
+	// face (see getSlideSceneLighting) applies after them. Slides only.
 	const SLIDE_BLIP_EFFECTS_CACHE_SIZE = 32;
 	const oSlideBlipEffectsCache = new Map();
 
@@ -1561,10 +1562,7 @@
 
 	// The blip's colour effects with their colours resolved, in the order they apply, or null when there are none.
 	function getSlideBlipColorEffects(oBlipFill, oShape) {
-		const aEffects = oBlipFill && oBlipFill.Effects;
-		if (!Array.isArray(aEffects) || aEffects.length === 0) {
-			return null;
-		}
+		const aEffects = oBlipFill && Array.isArray(oBlipFill.Effects) ? oBlipFill.Effects : [];
 		let oParents = null;
 		const getParents = function () {
 			if (!oParents) {
@@ -1602,6 +1600,11 @@
 			}
 		}
 		const aResult = aChanges.concat(aOthers);
+		// A scene3d light on the face (I-032) applies last.
+		const oLight = getSlideSceneLighting(oShape);
+		if (oLight) {
+			aResult.push({type: "light", a: oLight.a, b: oLight.b});
+		}
 		return aResult.length > 0 ? aResult : null;
 	}
 
@@ -1660,6 +1663,16 @@
 					aData[i] = aR[g];
 					aData[i + 1] = aG[g];
 					aData[i + 2] = aB[g];
+				}
+			} else if (oEffect.type === "light") {
+				const aTable = new Uint8Array(256);
+				for (let v = 0; v < 256; ++v) {
+					aTable[v] = Math.max(0, Math.min(255, Math.round(oEffect.a * v + oEffect.b)));
+				}
+				for (let i = 0; i < nLength; i += 4) {
+					aData[i] = aTable[aData[i]];
+					aData[i + 1] = aTable[aData[i + 1]];
+					aData[i + 2] = aTable[aData[i + 2]];
 				}
 			}
 		}
@@ -1782,6 +1795,137 @@
 		}
 		oSlideBlipEffectsCache.set(sKey, oEntry);
 		return oEntry.failed ? null : oEntry;
+	}
+	// PowerPoint shows a flat object with a scene3d camera as the camera sees it (I-032, measured on its PDF export):
+	// in the object's own frame, after its flips and before its rotation, the camera maps (u, v) about the centre to
+	// x = u cos(lon), y = u sin(lon) sin(lat) + v cos(lat) (y down) and then turns that counter-clockwise by rev.
+	// So lon 180 mirrors the object left to right and lat 180 top to bottom, text included, other angles foreshorten
+	// it, and edge-on (lon or lat 90) it is not drawn. perspectiveFront is drawn like orthographicFront (exact at the
+	// square-on angles); other camera presets are left alone. With the threePt rig from the top, a square-on face is
+	// lit: the front face's colours become round(1.03894 v + 5.007), the back face's (exactly one of lat and lon
+	// 180) round(0.77354 v + 9.984). Only pictures are lit here. Slides only.
+	const SLIDE_CAMERA_FRONT = 46; // orthographicFront
+	const SLIDE_CAMERA_PERSPECTIVE_FRONT = 53; // perspectiveFront
+	const SLIDE_LIGHT_RIG_THREE_PT = 25; // threePt
+	const SLIDE_LIGHT_DIR_TOP = 6; // t
+	const SLIDE_LIGHT_FRONT = {a: 1.03894, b: 5.007};
+	const SLIDE_LIGHT_BACK = {a: 0.77354, b: 9.984};
+
+	// The object's camera angles in radians as {lat, lon, rev, scene}, or null when there is no camera to draw.
+	function getSlideScene3dCamera(oDrawing) {
+		if (!Asc.editor || !Asc.editor.isPresentationEditor || !oDrawing || !oDrawing.spPr) {
+			return null;
+		}
+		const oScene = oDrawing.spPr.scene3d;
+		const oCamera = oScene && oScene.camera;
+		if (!oCamera || (oCamera.prst !== SLIDE_CAMERA_FRONT && oCamera.prst !== SLIDE_CAMERA_PERSPECTIVE_FRONT)) {
+			return null;
+		}
+		const oRot = oCamera.rot;
+		const dToRad = Math.PI / 180 / 60000;
+		return {
+			lat: (oRot && oRot.lat || 0) * dToRad,
+			lon: (oRot && oRot.lon || 0) * dToRad,
+			rev: (oRot && oRot.rev || 0) * dToRad,
+			scene: oScene
+		};
+	}
+
+	// The camera's 2 x 2 map in the object's frame (y down) as {sx, shx, shy, sy}, or null when it changes nothing.
+	function getSlideCameraMap(oCamera) {
+		const cLat = Math.cos(oCamera.lat), sLat = Math.sin(oCamera.lat);
+		const cLon = Math.cos(oCamera.lon), sLon = Math.sin(oCamera.lon);
+		const cRev = Math.cos(oCamera.rev), sRev = Math.sin(oCamera.rev);
+		// [[cLon, 0], [sLon sLat, cLat]], then the counter-clockwise turn [[cRev, sRev], [-sRev, cRev]]
+		const oMap = {
+			sx: cRev * cLon + sRev * sLon * sLat,
+			shx: sRev * cLat,
+			shy: -sRev * cLon + cRev * sLon * sLat,
+			sy: cRev * cLat
+		};
+		const dEps = 1e-9;
+		if (Math.abs(oMap.sx - 1) < dEps && Math.abs(oMap.sy - 1) < dEps && Math.abs(oMap.shx) < dEps && Math.abs(oMap.shy) < dEps) {
+			return null;
+		}
+		return oMap;
+	}
+
+	// The light on a square-on face as {a, b} (each colour channel v becomes round(a v + b)), or null.
+	function getSlideSceneLighting(oDrawing) {
+		const oCamera = getSlideScene3dCamera(oDrawing);
+		const oRig = oCamera && oCamera.scene.lightRig;
+		if (!oRig || oRig.rig !== SLIDE_LIGHT_RIG_THREE_PT || oRig.dir !== SLIDE_LIGHT_DIR_TOP || oRig.rot) {
+			return null;
+		}
+		const dFace = Math.cos(oCamera.lat) * Math.cos(oCamera.lon);
+		if (Math.abs(Math.abs(dFace) - 1) > 1e-6) {
+			return null;
+		}
+		return dFace > 0 ? SLIDE_LIGHT_FRONT : SLIDE_LIGHT_BACK;
+	}
+
+	function multiplySlideMatrices(oFirst, oThen) {
+		const oResult = oFirst.CreateDublicate();
+		AscCommon.global_MatrixTransformer.MultiplyAppend(oResult, oThen);
+		return oResult;
+	}
+
+	// Draws the object as its scene3d camera shows it: fDraw(transform, transformText) draws the object with the
+	// given transforms while the object's own transforms are moved by the camera. Returns false when there is no camera
+	// to apply (the caller then draws as usual).
+	function drawWithSlideCamera(oDrawing, fDraw, oGraphics, oTransform, oTransformText) {
+		if (oDrawing.slideCameraDrawing) {
+			return false;
+		}
+		const oCamera = getSlideScene3dCamera(oDrawing);
+		const oMap = oCamera && getSlideCameraMap(oCamera);
+		const oBase = oTransform || oDrawing.transform;
+		if (!oMap || !oBase || !(oDrawing.extX >= 0) || !(oDrawing.extY >= 0)) {
+			return false;
+		}
+		if (Math.abs(oMap.sx * oMap.sy - oMap.shx * oMap.shy) < 1e-6) {
+			// Seen edge-on: PowerPoint draws nothing. Bounds keep the object's own.
+			return !oGraphics.isBoundsChecker();
+		}
+		const oTransformer = AscCommon.global_MatrixTransformer;
+		// L: the centre to the origin, the camera seen through the flips (F C F, as the flips apply before it), and back.
+		const oLocal = new AscCommon.CMatrix();
+		const dHc = oDrawing.extX / 2, dVc = oDrawing.extY / 2;
+		const dFlips = (oDrawing.flipH ? -1 : 1) * (oDrawing.flipV ? -1 : 1);
+		const oCameraMatrix = new AscCommon.CMatrix();
+		oCameraMatrix.sx = oMap.sx;
+		oCameraMatrix.shx = oMap.shx * dFlips;
+		oCameraMatrix.shy = oMap.shy * dFlips;
+		oCameraMatrix.sy = oMap.sy;
+		oTransformer.TranslateAppend(oLocal, -dHc, -dVc);
+		oTransformer.MultiplyAppend(oLocal, oCameraMatrix);
+		oTransformer.TranslateAppend(oLocal, dHc, dVc);
+		// K = base^-1 L base moves anything drawn on the page by the camera.
+		const oMove = multiplySlideMatrices(multiplySlideMatrices(oTransformer.Invert(oBase), oLocal), oBase);
+		const aFields = ["transform", "transformText", "transformText2", "transformTextWordArt", "transformTextWordArt2"];
+		const aSaved = [];
+		const oMoved = new Map();
+		for (let i = 0; i < aFields.length; ++i) {
+			const oMatrix = oDrawing[aFields[i]];
+			aSaved.push(oMatrix);
+			if (oMatrix && oMatrix.CreateDublicate) {
+				if (!oMoved.has(oMatrix)) {
+					oMoved.set(oMatrix, multiplySlideMatrices(oMatrix, oMove));
+				}
+				oDrawing[aFields[i]] = oMoved.get(oMatrix);
+			}
+		}
+		oDrawing.slideCameraDrawing = true;
+		try {
+			fDraw(oTransform ? multiplySlideMatrices(oTransform, oMove) : oTransform,
+				oTransformText ? multiplySlideMatrices(oTransformText, oMove) : oTransformText);
+		} finally {
+			for (let i = 0; i < aFields.length; ++i) {
+				oDrawing[aFields[i]] = aSaved[i];
+			}
+			oDrawing.slideCameraDrawing = false;
+		}
+		return true;
 	}
 	CGraphicObjectBase.prototype.getShdwTransform = function(outerShdw, mainShape) {
 		const oTransform = new AscCommon.CMatrix();
@@ -4753,4 +4897,5 @@
 	window['AscFormat'].canSelectDrawing = canSelectDrawing;
 	window['AscFormat'].IsTrueDrawing = IsTrueDrawing;
 	window['AscFormat'].getSlideBlipEffectsImage = getSlideBlipEffectsImage;
+	window['AscFormat'].drawWithSlideCamera = drawWithSlideCamera;
 })(window);
