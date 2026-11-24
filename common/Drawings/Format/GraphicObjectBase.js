@@ -1538,6 +1538,251 @@
 		graphics.reset();
 		return true;
 	}
+	// PowerPoint bakes a picture's colour change, brightness/contrast (lum) and duotone into the picture's pixels:
+	// each clrChange first, on the original pixels (a pixel within 1 of clrFrom in every channel takes clrTo's colour
+	// and alpha), then lum and duotone in the order the blip lists them. lum maps each channel v (0..1) to
+	// floor(255 * clip(k * (v - 1/2) + 1/2 + bright * (1 + k) / 2)) with k = 1 / (1 - contrast) for a positive
+	// contrast and 1 + contrast otherwise; duotone takes g = floor(0.2126 R + 0.7152 G + 0.0722 B) and mixes its two
+	// colours as round(c1 + (c2 - c1) * g / 255). Measured on PowerPoint's PDF export (I-030). Slides only.
+	const SLIDE_BLIP_EFFECTS_CACHE_SIZE = 32;
+	const oSlideBlipEffectsCache = new Map();
+
+	function getSlideBlipEffectColor(oUniColor, oParents) {
+		if (!oUniColor || !oUniColor.color) {
+			return null;
+		}
+		oUniColor.Calculate(oParents.theme, oParents.slide, oParents.layout, oParents.master, {R: 0, G: 0, B: 0, A: 255});
+		const oRGBA = oUniColor.RGBA;
+		if (!oRGBA) {
+			return null;
+		}
+		return {R: oRGBA.R, G: oRGBA.G, B: oRGBA.B, A: AscFormat.isRealNumber(oRGBA.A) ? oRGBA.A : 255};
+	}
+
+	// The blip's colour effects with their colours resolved, in the order they apply, or null when there are none.
+	function getSlideBlipColorEffects(oBlipFill, oShape) {
+		const aEffects = oBlipFill && oBlipFill.Effects;
+		if (!Array.isArray(aEffects) || aEffects.length === 0) {
+			return null;
+		}
+		let oParents = null;
+		const getParents = function () {
+			if (!oParents) {
+				oParents = (oShape && oShape.getParentObjects && oShape.getParentObjects()) || {};
+			}
+			return oParents;
+		};
+		const aChanges = [];
+		const aOthers = [];
+		for (let i = 0; i < aEffects.length; ++i) {
+			const oEffect = aEffects[i];
+			if (!oEffect) {
+				continue;
+			}
+			if (oEffect.Type === AscFormat.EFFECT_TYPE_CLRCHANGE) {
+				const oFrom = getSlideBlipEffectColor(oEffect.clrFrom, getParents());
+				const oTo = getSlideBlipEffectColor(oEffect.clrTo, getParents());
+				if (oFrom && oTo) {
+					aChanges.push({type: "clrChange", from: [oFrom.R, oFrom.G, oFrom.B], to: [oTo.R, oTo.G, oTo.B, oTo.A]});
+				}
+			} else if (oEffect.Type === AscFormat.EFFECT_TYPE_LUM) {
+				const dBright = (oEffect.bright || 0) / 100000;
+				const dContrast = (oEffect.contrast || 0) / 100000;
+				if (dBright !== 0 || dContrast !== 0) {
+					aOthers.push({type: "lum", bright: dBright, contrast: dContrast});
+				}
+			} else if (oEffect.Type === AscFormat.EFFECT_TYPE_DUOTONE) {
+				if (Array.isArray(oEffect.colors) && oEffect.colors.length === 2) {
+					const oC1 = getSlideBlipEffectColor(oEffect.colors[0], getParents());
+					const oC2 = getSlideBlipEffectColor(oEffect.colors[1], getParents());
+					if (oC1 && oC2) {
+						aOthers.push({type: "duotone", c1: [oC1.R, oC1.G, oC1.B], c2: [oC2.R, oC2.G, oC2.B]});
+					}
+				}
+			}
+		}
+		const aResult = aChanges.concat(aOthers);
+		return aResult.length > 0 ? aResult : null;
+	}
+
+	function getSlideLumTable(dBright, dContrast) {
+		const dK = dContrast > 0 ? 1 / Math.max(1e-6, 1 - dContrast) : 1 + dContrast;
+		const aTable = new Uint8Array(256);
+		for (let i = 0; i < 256; ++i) {
+			const dValue = dK * (i / 255 - 0.5) + 0.5 + dBright * (1 + dK) / 2;
+			aTable[i] = Math.floor(255 * Math.max(0, Math.min(1, dValue)) + 1e-6);
+		}
+		return aTable;
+	}
+
+	// Applies the effects to RGBA pixels (non-premultiplied) in place.
+	function applySlideBlipColorEffects(aData, aEffects) {
+		const nLength = aData.length;
+		// Every colour change is matched against the original pixels.
+		const aChanges = aEffects.filter(function (oEffect) {
+			return oEffect.type === "clrChange";
+		});
+		if (aChanges.length > 0) {
+			for (let i = 0; i < nLength; i += 4) {
+				const r = aData[i], g = aData[i + 1], b = aData[i + 2];
+				for (let j = 0; j < aChanges.length; ++j) {
+					const aFrom = aChanges[j].from;
+					if (Math.abs(r - aFrom[0]) <= 1 && Math.abs(g - aFrom[1]) <= 1 && Math.abs(b - aFrom[2]) <= 1) {
+						const aTo = aChanges[j].to;
+						aData[i] = aTo[0];
+						aData[i + 1] = aTo[1];
+						aData[i + 2] = aTo[2];
+						aData[i + 3] = Math.round(aData[i + 3] * aTo[3] / 255);
+						break;
+					}
+				}
+			}
+		}
+		for (let e = 0; e < aEffects.length; ++e) {
+			const oEffect = aEffects[e];
+			if (oEffect.type === "lum") {
+				const aTable = getSlideLumTable(oEffect.bright, oEffect.contrast);
+				for (let i = 0; i < nLength; i += 4) {
+					aData[i] = aTable[aData[i]];
+					aData[i + 1] = aTable[aData[i + 1]];
+					aData[i + 2] = aTable[aData[i + 2]];
+				}
+			} else if (oEffect.type === "duotone") {
+				const aR = new Uint8Array(256), aG = new Uint8Array(256), aB = new Uint8Array(256);
+				const c1 = oEffect.c1, c2 = oEffect.c2;
+				for (let g = 0; g < 256; ++g) {
+					aR[g] = Math.round(c1[0] + (c2[0] - c1[0]) * g / 255);
+					aG[g] = Math.round(c1[1] + (c2[1] - c1[1]) * g / 255);
+					aB[g] = Math.round(c1[2] + (c2[2] - c1[2]) * g / 255);
+				}
+				for (let i = 0; i < nLength; i += 4) {
+					const g = Math.floor(0.2126 * aData[i] + 0.7152 * aData[i + 1] + 0.0722 * aData[i + 2] + 1e-6);
+					aData[i] = aR[g];
+					aData[i + 1] = aG[g];
+					aData[i + 2] = aB[g];
+				}
+			}
+		}
+	}
+
+	// The picture's pixels as {data (RGBA, top row first), width, height, canvas?}, or null.
+	function getSlideBlipSourcePixels(sRasterImageId) {
+		if (window["NATIVE_EDITOR_ENJINE"]) {
+			if (!window["native"] || !window["native"]["GetFileBinary"] || !window["native"]["GetImagesPath"] || typeof CreateEmbedObject === "undefined") {
+				return null;
+			}
+			const sImages = window["native"]["GetImagesPath"]();
+			if (!sImages) {
+				return null;
+			}
+			const sName = sRasterImageId.substring(sRasterImageId.lastIndexOf("/") + 1);
+			const nSlash = Math.max(sImages.lastIndexOf("/"), sImages.lastIndexOf("\\"));
+			const aPaths = [sImages + "/" + sName];
+			if (nSlash > 0 && 0 === sRasterImageId.indexOf("media/")) {
+				aPaths.push(sImages.substring(0, nSlash) + "/" + sRasterImageId);
+			}
+			let aBytes = null;
+			for (let i = 0; i < aPaths.length && !aBytes; ++i) {
+				const aFile = window["native"]["GetFileBinary"](aPaths[i]);
+				if (aFile && aFile.length > 0) {
+					aBytes = aFile;
+				}
+			}
+			if (!aBytes) {
+				return null;
+			}
+			const oImage = CreateEmbedObject("CZipEmbed")["decodeImage"](aBytes, true);
+			if (!oImage || !oImage["data"]) {
+				return null;
+			}
+			const nW = oImage["width"], nH = oImage["height"], nStride = oImage["stride"];
+			const aData = oImage["data"];
+			if (!(nW > 0) || !(nH > 0) || aData.length < 4 * nW * nH) {
+				return null;
+			}
+			const aPixels = new Uint8Array(4 * nW * nH);
+			const nRow = 4 * nW;
+			for (let y = 0; y < nH; ++y) {
+				// A negative stride means the decoder stored the bottom row first.
+				const nFrom = (nStride < 0 ? nH - 1 - y : y) * nRow;
+				aPixels.set(aData.subarray(nFrom, nFrom + nRow), y * nRow);
+			}
+			return {data: aPixels, width: nW, height: nH, canvas: null};
+		}
+		if (typeof document === "undefined" || !Asc.editor || !Asc.editor.ImageLoader) {
+			return null;
+		}
+		const oImageData = Asc.editor.ImageLoader.map_image_index[AscCommon.getFullImageSrc2(sRasterImageId)];
+		const oImage = oImageData && oImageData.Status === AscFonts.ImageLoadStatus.Complete ? oImageData.Image : null;
+		if (!oImage || !(oImage.width > 0) || !(oImage.height > 0)) {
+			return null;
+		}
+		const oCanvas = document.createElement("canvas");
+		oCanvas.width = oImage.width;
+		oCanvas.height = oImage.height;
+		const oContext = oCanvas.getContext("2d");
+		oContext.drawImage(oImage, 0, 0);
+		const oData = oContext.getImageData(0, 0, oCanvas.width, oCanvas.height);
+		return {data: oData.data, width: oCanvas.width, height: oCanvas.height, canvas: oCanvas, imageData: oData};
+	}
+
+	// The picture with its colour effects baked in, as {canvas, url}, cached by picture and effects; null when the
+	// blip has no colour effects or the picture can't be read (the caller then draws the original picture).
+	function getSlideBlipEffectsImage(oBlipFill, oShape, bNeedUrl) {
+		if (!Asc.editor || !Asc.editor.isPresentationEditor || !oBlipFill || typeof oBlipFill.RasterImageId !== "string") {
+			return null;
+		}
+		const sImageId = oBlipFill.RasterImageId;
+		if (sImageId.length === 0 || /\.(svg|emf|wmf)$/i.test(sImageId)) {
+			return null;
+		}
+		let aEffects;
+		try {
+			aEffects = getSlideBlipColorEffects(oBlipFill, oShape);
+		} catch (e) {
+			return null;
+		}
+		if (!aEffects) {
+			return null;
+		}
+		const sKey = sImageId + "|" + JSON.stringify(aEffects);
+		let oEntry = oSlideBlipEffectsCache.get(sKey);
+		if (oEntry && (oEntry.failed || !bNeedUrl || oEntry.url)) {
+			return oEntry.failed ? null : oEntry;
+		}
+		try {
+			if (!oEntry) {
+				const oSource = getSlideBlipSourcePixels(sImageId);
+				if (!oSource) {
+					// The canvas source may still be loading; try again on the next draw.
+					return null;
+				}
+				applySlideBlipColorEffects(oSource.data, aEffects);
+				oEntry = {canvas: null, url: null, width: oSource.width, height: oSource.height, failed: false};
+				if (oSource.canvas) {
+					oSource.canvas.getContext("2d").putImageData(oSource.imageData, 0, 0);
+					oEntry.canvas = oSource.canvas;
+				} else {
+					const aPng = CreateEmbedObject("CZipEmbed")["encodeImageData"](oSource.data, oSource.width, oSource.height, 4 * oSource.width, 4, true);
+					if (!aPng) {
+						throw new Error("encode");
+					}
+					oEntry.url = "data:image/png;base64," + AscCommon.Base64.encode(aPng);
+				}
+			}
+			if (bNeedUrl && !oEntry.url && oEntry.canvas) {
+				oEntry.url = oEntry.canvas.toDataURL("image/png");
+			}
+		} catch (e) {
+			// A tainted canvas or a decoder failure: keep the original picture.
+			oEntry = {failed: true};
+		}
+		if (oSlideBlipEffectsCache.size >= SLIDE_BLIP_EFFECTS_CACHE_SIZE && !oSlideBlipEffectsCache.has(sKey)) {
+			oSlideBlipEffectsCache.delete(oSlideBlipEffectsCache.keys().next().value);
+		}
+		oSlideBlipEffectsCache.set(sKey, oEntry);
+		return oEntry.failed ? null : oEntry;
+	}
 	CGraphicObjectBase.prototype.getShdwTransform = function(outerShdw, mainShape) {
 		const oTransform = new AscCommon.CMatrix();
 		if(this.flipH) {
@@ -4507,4 +4752,5 @@
 	window['AscFormat'].MACRO_PREFIX = "jsaProject_";
 	window['AscFormat'].canSelectDrawing = canSelectDrawing;
 	window['AscFormat'].IsTrueDrawing = IsTrueDrawing;
+	window['AscFormat'].getSlideBlipEffectsImage = getSlideBlipEffectsImage;
 })(window);
