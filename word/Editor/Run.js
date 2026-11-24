@@ -4145,7 +4145,13 @@ ParaRun.prototype.Recalculate_Range = function(PRS, ParaPr, Depth)
 					else
 						Item.ResetCondensedWidth();
 
-					if (Word && PRS.LastItem && para_Text === PRS.LastItem.Type && !PRS.LastItem.CanBeAtEndOfLine())
+					// PowerPoint breaks at the spaces after an opening mark (“ ‘ ( [ { $ £ ¥ and the East Asian
+					// brackets alike), so the mark can end a line; only a mark attached to the next word stays with it.
+					if (Word
+						&& PRS.LastItem
+						&& para_Text === PRS.LastItem.Type
+						&& !PRS.LastItem.CanBeAtEndOfLine()
+						&& (!isSlideText || PRS.LastItem.IsNBSP()))
 					{
 						WordLen += Item.GetWidth();
 						break;
