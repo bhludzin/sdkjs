@@ -72,7 +72,28 @@
 		oContext.SetFontInternal(sFontName, nFontSize, nStyle);
 		
 		let nKoef = COEF * nFontSize * coeff;
-		if (1 === oGrapheme[2])
+
+		let oColorGlyphs = GetColorGlyphDrawer(oGrapheme[0], sFontName, nStyle, oContext);
+		if (oColorGlyphs)
+		{
+			oColorGlyphs.Begin();
+			let nPos = 3;
+			for (let nIndex = 0, nCount = oGrapheme[2]; nIndex < nCount; ++nIndex)
+			{
+				let nGID          = oGrapheme[nPos++];
+				let nAdvanceX     = oGrapheme[nPos++];
+				let nAdvanceY     = oGrapheme[nPos++];
+				let nOffsetX      = oGrapheme[nPos++];
+				let nOffsetY      = oGrapheme[nPos++];
+				let arrCodePoints = oGrapheme[nPos++];
+
+				oColorGlyphs.Draw(nGID, nX + nOffsetX * nKoef, nY - nOffsetY * nKoef, arrCodePoints);
+				nX += nAdvanceX * nKoef;
+				nY += nAdvanceY * nKoef;
+			}
+			oColorGlyphs.End();
+		}
+		else if (1 === oGrapheme[2])
 		{
 			oContext.tg(oGrapheme[3], nX + oGrapheme[6] * nKoef, nY - oGrapheme[7] * nKoef, oGrapheme[8]);
 		}
@@ -94,6 +115,272 @@
 				nY += nAdvanceY * nKoef;
 			}
 		}
+	}
+	//------------------------------------------------------------------------------------------------------------------
+	// Colour glyphs. PowerPoint draws the glyphs of a colour font (COLR/CPAL, e.g. Segoe UI Emoji) in their palette
+	// colours; the font engine and the PDF writer only know the monochrome outline. For slides, a glyph that has a
+	// COLR v0 layer list is drawn as its layers, bottom to top, each filled with its palette 0 colour (or with the
+	// text colour for palette index 0xFFFF).
+	//------------------------------------------------------------------------------------------------------------------
+	const COLOR_GLYPH_TABLES = {}; // font file id + face index -> CColorGlyphTable or null
+	const COLOR_GLYPH_FONTS  = {}; // grapheme font key (FontNameMap id << 8 | style) -> CColorGlyphTable or null
+	const NO_CODEPOINTS      = [];
+
+	function CColorGlyphTable(arrBase, arrLayers, arrPalette)
+	{
+		this.Base    = arrBase;    // [gid, firstLayerIndex, numLayers] * n, sorted by gid
+		this.Layers  = arrLayers;  // [gid, paletteIndex] * n
+		this.Palette = arrPalette; // [r, g, b, a] * n, palette 0
+	}
+	CColorGlyphTable.prototype.FindBase = function(nGID)
+	{
+		let nL = 0, nR = this.Base.length / 3 - 1;
+		while (nL <= nR)
+		{
+			let nM   = (nL + nR) >> 1;
+			let nCur = this.Base[3 * nM];
+			if (nCur === nGID)
+				return nM;
+			else if (nCur < nGID)
+				nL = nM + 1;
+			else
+				nR = nM - 1;
+		}
+		return -1;
+	};
+	function ReadColorGlyphTable(data, size, faceIndex)
+	{
+		if (!data || "string" === typeof data || !(size > 12))
+			return null;
+
+		let u8  = function(pos) { return data[pos] & 0xFF; };
+		let u16 = function(pos) { return (u8(pos) << 8) | u8(pos + 1); };
+		let u32 = function(pos) { return ((u8(pos) << 24) >>> 0) + (u8(pos + 1) << 16) + (u8(pos + 2) << 8) + u8(pos + 3); };
+
+		let offset = 0;
+		if (0x74746366 === u32(0)) // 'ttcf'
+		{
+			if (faceIndex >= u32(8))
+				return null;
+			offset = u32(12 + 4 * faceIndex);
+		}
+
+		let tag = u32(offset);
+		if (0x00010000 !== tag && 0x4F54544F !== tag && 0x74727565 !== tag) // 1.0, 'OTTO', 'true'
+			return null;
+
+		let colr = null, cpal = null;
+		for (let i = 0, numTables = u16(offset + 4); i < numTables; ++i)
+		{
+			let rec = offset + 12 + 16 * i;
+			if (rec + 16 > size)
+				return null;
+			let recTag = u32(rec);
+			if (0x434F4C52 === recTag) // 'COLR'
+				colr = {offset : u32(rec + 8), length : u32(rec + 12)};
+			else if (0x4350414C === recTag) // 'CPAL'
+				cpal = {offset : u32(rec + 8), length : u32(rec + 12)};
+		}
+
+		if (!colr || !cpal || colr.length < 14 || cpal.length < 14 || colr.offset + 14 > size || cpal.offset + 14 > size)
+			return null;
+
+		// COLR v0 header (v1 keeps the v0 fields and records first)
+		let c = colr.offset;
+		if (u16(c) > 1)
+			return null;
+		let numBase     = u16(c + 2);
+		let baseOffset  = c + u32(c + 4);
+		let layerOffset = c + u32(c + 8);
+		let numLayers   = u16(c + 12);
+		if (!numBase || !numLayers || baseOffset + 6 * numBase > size || layerOffset + 4 * numLayers > size)
+			return null;
+
+		// CPAL, palette 0; colour records are B, G, R, A
+		let p            = cpal.offset;
+		let numEntries   = u16(p + 2);
+		let numPalettes  = u16(p + 4);
+		let numRecords   = u16(p + 6);
+		let recordsStart = p + u32(p + 8);
+		if (!numEntries || !numPalettes || p + 14 > size)
+			return null;
+		let firstRecord = u16(p + 12);
+		if (firstRecord + numEntries > numRecords || recordsStart + 4 * (firstRecord + numEntries) > size)
+			return null;
+
+		let arrBase = new Uint16Array(3 * numBase);
+		for (let i = 0; i < numBase; ++i)
+		{
+			let pos = baseOffset + 6 * i;
+			arrBase[3 * i]     = u16(pos);
+			arrBase[3 * i + 1] = u16(pos + 2);
+			arrBase[3 * i + 2] = u16(pos + 4);
+		}
+
+		let arrLayers = new Uint16Array(2 * numLayers);
+		for (let i = 0; i < numLayers; ++i)
+		{
+			let pos = layerOffset + 4 * i;
+			arrLayers[2 * i]     = u16(pos);
+			arrLayers[2 * i + 1] = u16(pos + 2);
+		}
+
+		let arrPalette = new Uint8Array(4 * numEntries);
+		for (let i = 0; i < numEntries; ++i)
+		{
+			let pos = recordsStart + 4 * (firstRecord + i);
+			arrPalette[4 * i]     = u8(pos + 2);
+			arrPalette[4 * i + 1] = u8(pos + 1);
+			arrPalette[4 * i + 2] = u8(pos);
+			arrPalette[4 * i + 3] = u8(pos + 3);
+		}
+
+		return new CColorGlyphTable(arrBase, arrLayers, arrPalette);
+	}
+	function GetColorGlyphTable(nFontKey, sFontName, nStyle)
+	{
+		if (undefined !== COLOR_GLYPH_FONTS[nFontKey])
+			return COLOR_GLYPH_FONTS[nFontKey];
+
+		let oInfo = AscFonts.g_fontApplication ? AscFonts.g_fontApplication.GetFontInfo(sFontName, nStyle) : null;
+		let oId   = oInfo && AscCommon.g_font_loader ? oInfo.GetFontID(AscCommon.g_font_loader, nStyle) : null;
+		if (!oId || !oId.file)
+			return (COLOR_GLYPH_FONTS[nFontKey] = null);
+
+		let nStreamIndex = oId.file.stream_index;
+		if (undefined === nStreamIndex || null === nStreamIndex || nStreamIndex < 0)
+			return null; // not loaded yet: ask again next time
+
+		let nFaceIndex = oId.faceIndex ? oId.faceIndex : 0;
+		let sKey       = oId.id + "_" + nFaceIndex;
+		if (undefined === COLOR_GLYPH_TABLES[sKey])
+		{
+			let oTable = null;
+			try
+			{
+				let oStream = AscFonts["getFontStream"](nStreamIndex);
+				oTable = oStream ? ReadColorGlyphTable(oStream["data"], oStream["size"], nFaceIndex) : null;
+			}
+			catch (e)
+			{
+				oTable = null;
+			}
+			COLOR_GLYPH_TABLES[sKey] = oTable;
+		}
+
+		return (COLOR_GLYPH_FONTS[nFontKey] = COLOR_GLYPH_TABLES[sKey]);
+	}
+
+	/**
+	 * Draws the glyphs of one grapheme as COLR layers on a drawing context with a solid text brush.
+	 * @constructor
+	 */
+	function CColorGlyphDrawer()
+	{
+		this.Table   = null;
+		this.Context = null;
+		this.R       = 0;
+		this.G       = 0;
+		this.B       = 0;
+		this.A       = 255;
+		this.Changed = false;
+	}
+	CColorGlyphDrawer.prototype.Init = function(oTable, oContext, oColor)
+	{
+		this.Table   = oTable;
+		this.Context = oContext;
+		this.R       = oColor.R;
+		this.G       = oColor.G;
+		this.B       = oColor.B;
+		this.A       = undefined === oColor.A ? 255 : oColor.A;
+		this.Changed = false;
+		return this;
+	};
+	CColorGlyphDrawer.prototype.Begin = function()
+	{
+		this.Changed = false;
+	};
+	CColorGlyphDrawer.prototype.Draw = function(nGID, nX, nY, arrCodePoints)
+	{
+		let oTable = this.Table;
+		let nBase  = oTable.FindBase(nGID);
+		if (-1 === nBase)
+		{
+			if (this.Changed)
+			{
+				this.Context.b_color1(this.R, this.G, this.B, this.A);
+				this.Changed = false;
+			}
+			this.Context.tg(nGID, nX, nY, arrCodePoints);
+			return;
+		}
+
+		let nFirst      = oTable.Base[3 * nBase + 1];
+		let nCount      = oTable.Base[3 * nBase + 2];
+		let nPalCount   = oTable.Palette.length >> 2;
+		let nLayerCount = oTable.Layers.length >> 1;
+		for (let nIndex = 0; nIndex < nCount && nFirst + nIndex < nLayerCount; ++nIndex)
+		{
+			let nLayer   = nFirst + nIndex;
+			let nPalette = oTable.Layers[2 * nLayer + 1];
+			if (nPalette < nPalCount)
+			{
+				let p = 4 * nPalette;
+				let a = (oTable.Palette[p + 3] * this.A / 255 + 0.5) | 0;
+				this.Context.b_color1(oTable.Palette[p], oTable.Palette[p + 1], oTable.Palette[p + 2], a);
+				this.Changed = true;
+			}
+			else if (this.Changed)
+			{
+				this.Context.b_color1(this.R, this.G, this.B, this.A);
+				this.Changed = false;
+			}
+
+			// The code points go with the first layer only, so that the text is extracted once
+			this.Context.tg(oTable.Layers[2 * nLayer], nX, nY, 0 === nIndex ? arrCodePoints : NO_CODEPOINTS);
+		}
+	};
+	CColorGlyphDrawer.prototype.End = function()
+	{
+		if (this.Changed)
+			this.Context.b_color1(this.R, this.G, this.B, this.A);
+
+		this.Changed = false;
+		this.Table   = null;
+		this.Context = null;
+	};
+	const COLOR_GLYPH_DRAWER = new CColorGlyphDrawer();
+
+	/**
+	 * @returns {?CColorGlyphDrawer} a drawer if the grapheme's font has colour glyphs and the context draws text with
+	 * a solid brush we can read back (canvas or PDF metafile), on slides only
+	 */
+	function GetColorGlyphDrawer(nFontKey, sFontName, nStyle, oContext)
+	{
+		if (!Asc.editor || !Asc.editor.isPresentationEditor)
+			return null;
+
+		let oTable = GetColorGlyphTable(nFontKey, sFontName, nStyle);
+		if (!oTable)
+			return null;
+
+		let oBrush = null;
+		if (AscCommon.CDocumentRenderer && oContext instanceof AscCommon.CDocumentRenderer)
+		{
+			let oPage = oContext.m_lPagesCount > 0 ? oContext.m_arrayPages[oContext.m_lPagesCount - 1] : null;
+			if (oPage && 0 === oPage.BrushType) // MetaBrushType.Solid
+				oBrush = oPage.m_oBrush;
+		}
+		else if (AscCommon.CGraphics && oContext instanceof AscCommon.CGraphics)
+		{
+			oBrush = oContext.m_oBrush;
+		}
+
+		let oColor = oBrush ? oBrush.Color1 : null;
+		if (!oColor || !(oColor.R >= 0) || !(oColor.G >= 0) || !(oColor.B >= 0))
+			return null;
+
+		return COLOR_GLYPH_DRAWER.Init(oTable, oContext, oColor);
 	}
 	function CompareGraphemes(g)
 	{
