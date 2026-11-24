@@ -9314,6 +9314,8 @@
 			this.parent = null;
 
 			this.effectProps = null;
+			// scene3d as read from the file (an AscFormat.Scene3d outside the history; not saved)
+			this.scene3d = null;
 		}
 
 		InitClass(CSpPr, CBaseFormatObject, AscDFH.historyitem_type_SpPr);
@@ -9364,6 +9366,9 @@
 			}
 			if (this.effectProps) {
 				duplicate.setEffectPr(this.effectProps.createDuplicate());
+			}
+			if (this.scene3d) {
+				duplicate.scene3d = this.scene3d.createDuplicate();
 			}
 			return duplicate;
 		};

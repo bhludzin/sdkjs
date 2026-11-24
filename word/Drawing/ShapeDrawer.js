@@ -2074,7 +2074,12 @@ CShapeDrawer.prototype =
 	// (I-030, slides only).
 	getBlipEffectsImage: function (needUrl) {
 		const fill = this.UniFill && this.UniFill.fill;
-		if (!fill || !Array.isArray(fill.Effects) || fill.Effects.length === 0 || !AscFormat.getSlideBlipEffectsImage) {
+		if (!fill || !AscFormat.getSlideBlipEffectsImage) {
+			return null;
+		}
+		// colour effects, or a scene3d light on the face (I-032)
+		const hasScene3d = !!(this.Shape && this.Shape.spPr && this.Shape.spPr.scene3d);
+		if ((!Array.isArray(fill.Effects) || fill.Effects.length === 0) && !hasScene3d) {
 			return null;
 		}
 		return AscFormat.getSlideBlipEffectsImage(fill, this.Shape, needUrl);
