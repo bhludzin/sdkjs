@@ -154,11 +154,11 @@
 		let fontSize = (((this.Flags >> 16) & 0xFFFF) / 64);
 		let Temp = width * fontSize;
 		
-		var ResultWidth  = (Math.max((Temp + textPr.Spacing), 0) * AscWord.TEXTWIDTH_DIVIDER) | 0;
+		var ResultWidth  = AscWord.ToTextWidth(Math.max((Temp + textPr.Spacing), 0));
 		this.Width       = ResultWidth;
 		this.WidthOrigin = ResultWidth;
-		
-		this.WidthEn = (Math.max((enWidth * fontSize + textPr.Spacing * 2), 0) * AscWord.TEXTWIDTH_DIVIDER) | 0;
+
+		this.WidthEn = AscWord.ToTextWidth(Math.max((enWidth * fontSize + textPr.Spacing * 2), 0));
 		
 		if (0x2003 === this.Value || 0x2002 === this.Value || 0x2005 === this.Value)
 		{

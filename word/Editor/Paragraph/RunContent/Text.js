@@ -308,11 +308,11 @@
 	};
 	CRunText.prototype.SetWidth = function(nWidth)
 	{
-		this.Width = ((nWidth * (((this.Flags >> 16) & 0xFFFF) / 64)) * AscWord.TEXTWIDTH_DIVIDER) | 0;
+		this.Width = AscWord.ToTextWidth(nWidth * (((this.Flags >> 16) & 0xFFFF) / 64));
 	};
 	CRunText.prototype.SetTemporaryWidth = function(nWidth)
 	{
-		this.TempWidth = ((nWidth * (((this.Flags >> 16) & 0xFFFF) / 64)) * AscWord.TEXTWIDTH_DIVIDER) | 0;
+		this.TempWidth = AscWord.ToTextWidth(nWidth * (((this.Flags >> 16) & 0xFFFF) / 64));
 	};
 	CRunText.prototype.SetWidthVisible = function(nWidth, textPr)
 	{
@@ -322,7 +322,7 @@
 			nWidth += AscFonts.GetGraphemeWidth(AscCommon.g_oTextMeasurer.GetGraphemeByUnicode(0x002D, fontInfo.Name, fontInfo.Style)) * (((this.Flags >> 16) & 0xFFFF) / 64);
 		}
 		
-		let nW = (nWidth * AscWord.TEXTWIDTH_DIVIDER) | 0;
+		let nW = AscWord.ToTextWidth(nWidth);
 
 		let isTemporary = this.IsTemporary();
 

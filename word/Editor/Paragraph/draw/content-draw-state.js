@@ -501,8 +501,8 @@
 		let grid  = info.grid;
 		let steps = t.sx / grid; // grid steps (1/3000 inch, 5 a pixel) per mm of the layout
 
-		// its layout position from the run's start (item widths are kept cut to 1/16384 mm: half of that back for each)
-		let ref = (this.X - this.slideRunX + this.slideCount * 0.5 / AscWord.TEXTWIDTH_DIVIDER) * steps;
+		// its layout position from the run's start (slide item widths are kept rounded to 1/16384 mm, I-031)
+		let ref = (this.X - this.slideRunX) * steps;
 
 		let ppem = Math.floor(fontSize * 600 / 72 + 0.5);
 		let em   = advance * 72 / 25.4;
@@ -512,8 +512,10 @@
 		let dev  = 0;
 		if (prev && isVisible && prev.isSpace)
 		{
+			// an exact half is common (a word start n/8 pt into the run is one when n is 12 more than a multiple of 24);
+			// item widths kept in whole 1/16384 mm put ref up to a few thousandths of a pixel off it
 			let px   = ref / 5;
-			let half = Math.abs(px - Math.floor(px) - 0.5) < 1e-3;
+			let half = Math.abs(px - Math.floor(px) - 0.5) < 1e-2;
 			dev = 5 * (half ? (px < 1024 ? Math.floor(px) : Math.ceil(px)) : Math.floor(px + 0.5));
 		}
 		else if (prev)

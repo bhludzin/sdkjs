@@ -31,6 +31,22 @@
 	const TEXTWIDTH_DIVIDER = 16384;
 
 	/**
+	 * A width (mm) in the units run elements keep it in, 1/TEXTWIDTH_DIVIDER mm. It is cut to a whole
+	 * unit, but in slides rounded to the nearest one: PowerPoint wraps a line that is wider than its
+	 * text area by as little as 0.004 pt, and cutting every glyph's width makes a line of 100 glyphs
+	 * about 0.01 pt shorter than its glyphs.
+	 * @param {number} width
+	 * @returns {number}
+	 */
+	function ToTextWidth(width)
+	{
+		let w = width * TEXTWIDTH_DIVIDER;
+		if (Asc.editor && Asc.editor.isPresentationEditor)
+			w = Math.round(w);
+		return w | 0;
+	}
+
+	/**
 	 * Базовый класс для элементов, лежащих внутри рана
 	 * @constructor
 	 */
@@ -546,6 +562,7 @@
 	window['AscWord'] = window['AscWord'] || {};
 	window['AscWord'].CRunElementBase   = CRunElementBase;
 	window['AscWord'].TEXTWIDTH_DIVIDER = TEXTWIDTH_DIVIDER;
+	window['AscWord'].ToTextWidth = ToTextWidth;
 
 })(window);
 
